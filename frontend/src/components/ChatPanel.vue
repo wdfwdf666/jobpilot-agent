@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { fetchHistory, streamChat } from '../api'
+import { renderMarkdown } from '../markdown'
 import type { ChatMessage } from '../types'
 
 const emit = defineEmits<{ (e: 'kb-changed'): void }>()
@@ -67,6 +68,12 @@ function scrollToBottom() {
     listEl.value?.scrollTo({ top: listEl.value.scrollHeight })
   })
 }
+
+// AI 回复走 markdown + DOMPurify 净化；用户输入永远按纯文本展示（不可信输入）。
+// 流式期间每条 delta 都会整段重解析，marked 对此足够快；若后续消息很长可再做节流。
+function rendered(content: string): string {
+  return renderMarkdown(content)
+}
 </script>
 
 <template>
@@ -91,9 +98,8 @@ function scrollToBottom() {
         class="bubble-row"
         :class="m.role"
       >
-        <div class="bubble">
-          <pre>{{ m.content }}</pre>
-        </div>
+        <div v-if="m.role === 'assistant'" class="bubble md" v-html="rendered(m.content)" />
+        <div v-else class="bubble"><pre>{{ m.content }}</pre></div>
       </div>
 
       <div v-if="streaming" class="typing">正在生成<span class="dots">…</span></div>
@@ -159,6 +165,67 @@ function scrollToBottom() {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* AI 气泡的 markdown 排版（v-html 内容需 :deep 穿透） */
+.bubble.md :deep(p) { margin: 0 0 8px; }
+.bubble.md :deep(p:last-child) { margin-bottom: 0; }
+.bubble.md :deep(h1),
+.bubble.md :deep(h2),
+.bubble.md :deep(h3),
+.bubble.md :deep(h4) {
+  margin: 14px 0 6px;
+  font-size: 1.05em;
+  line-height: 1.4;
+}
+.bubble.md :deep(ul),
+.bubble.md :deep(ol) { margin: 6px 0 8px; padding-left: 20px; }
+.bubble.md :deep(li) { margin: 3px 0; }
+.bubble.md :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--primary);
+  background: rgba(59, 110, 245, 0.06);
+  border-radius: 4px;
+  color: var(--text-2);
+}
+.bubble.md :deep(blockquote p) { margin: 2px 0; }
+.bubble.md :deep(code) {
+  font-family: Consolas, 'JetBrains Mono', monospace;
+  font-size: 0.92em;
+  background: rgba(31, 35, 41, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.bubble.md :deep(pre) {
+  margin: 8px 0;
+  padding: 12px 14px;
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.bubble.md :deep(pre code) {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.bubble.md :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  width: 100%;
+}
+.bubble.md :deep(th),
+.bubble.md :deep(td) {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+}
+.bubble.md :deep(th) { background: var(--bg); font-weight: 600; }
+.bubble.md :deep(a) { color: var(--primary); }
+.bubble.md :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 .typing { color: var(--text-2); font-size: 13px; }
 
 .error {
