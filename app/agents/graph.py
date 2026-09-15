@@ -28,9 +28,24 @@ class AgentState(TypedDict):
     artifacts: dict  # 结构化中间产物：jd_analysis / match_result / grade ...
 
 
-# 单例：检索器和面试官有内部状态，进程内复用
-_retriever = Retriever()
-_interviewer = InterviewerAgent()
+# 懒加载单例：检索器/面试官持有 API 客户端，不能在 import 时实例化，
+# 否则"没有 Key 就 import 失败"，测试和 CI 都跑不起来。
+_retriever: Retriever | None = None
+_interviewer: InterviewerAgent | None = None
+
+
+def get_retriever() -> Retriever:
+    global _retriever
+    if _retriever is None:
+        _retriever = Retriever()
+    return _retriever
+
+
+def get_interviewer() -> InterviewerAgent:
+    global _interviewer
+    if _interviewer is None:
+        _interviewer = InterviewerAgent()
+    return _interviewer
 
 
 def route_node(state: AgentState) -> dict:
@@ -39,7 +54,7 @@ def route_node(state: AgentState) -> dict:
 
 def jd_analyst_node(state: AgentState) -> dict:
     analysis = analyze_jd(state["user_input"])
-    resume_chunks = _retriever.search("简历 个人经历 技能 项目", top_k=5)
+    resume_chunks = get_retriever().search("简历 个人经历 技能 项目", top_k=5)
     match = match_resume(analysis, "\n".join(c.text for c in resume_chunks))
     summary = f"岗位【{analysis.position}】匹配度 {match.overall_score}/100。\n" + "\n".join(
         f"- {item.requirement}：{item.score} 分" + (f"（{item.gap_advice}）" if item.gap_advice else "")
@@ -49,14 +64,14 @@ def jd_analyst_node(state: AgentState) -> dict:
 
 
 def resume_advisor_node(state: AgentState) -> dict:
-    chunks = _retriever.search(state["user_input"], top_k=5)
+    chunks = get_retriever().search(state["user_input"], top_k=5)
     retrieved = [RetrievedChunk(text=c["text"], source=c["metadata"].get("source", ""),
                                 category=c["metadata"].get("category", "")) for c in chunks]
     return {"reply": advise(state["user_input"], retrieved)}
 
 
 def interviewer_node(state: AgentState) -> dict:
-    reply = _interviewer.chat(state["user_input"])
+    reply = get_interviewer().chat(state["user_input"])
     return {"reply": reply}
 
 

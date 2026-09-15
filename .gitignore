@@ -25,3 +25,7 @@ Thumbs.db
 # 评测产物
 eval_results/
 *.log
+_pip.log
+_test.log
+_check.txt
+_ls.txt

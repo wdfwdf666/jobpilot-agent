@@ -27,13 +27,22 @@ dependencies = [
 # V2 混合检索需要（第 2 周再装）
 hybrid = ["rank-bm25>=0.2", "jieba>=0.42", "sentence-transformers>=3.0"]
 eval = ["pandas>=2.0"]
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
+# 必须显式限定范围：否则 setuptools 的 flat-layout 自动发现会把 data/frontend/scripts
+# 也当作顶层包，报 "Multiple top-level packages discovered in a flat-layout"，
+# 导致 editable 安装直接失败（本项目真实踩坑）。
+where = ["."]
 include = ["app*"]
+exclude = ["data*", "frontend*", "scripts*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.uvicorn]
 port = 8000
