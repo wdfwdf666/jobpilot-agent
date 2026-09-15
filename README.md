@@ -62,7 +62,7 @@ streamlit run frontend/app.py
 | `app/agents/` | Planner + 三个子 Agent + LangGraph 编排 | 骨架 |
 | `app/api/` | REST + SSE 流式接口、知识库管理接口 | 骨架 |
 | `app/eval/` | LLM-as-judge 评测（第 2 周） | 占位 |
-| `frontend/` | Streamlit 聊天界面 | 骨架 |
+| `frontend/` | Vue 3 + TS 对话界面（聊天流式渲染 + 知识库管理面板） | ✅ |
 | `scripts/ingest.py` | 知识入库 CLI | ✅ |
 | `scripts/check_llm.py` | LLM/Embedding 连通性自检 | ✅ |
 | `scripts/check_rag.py` | RAG 链路端到端自检（入库→检索） | ✅ |

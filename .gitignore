@@ -30,3 +30,7 @@ _test.log
 _check.txt
 _ls.txt
 _git.txt
+_probe.txt
+
+# Node / 前端
+node_modules/

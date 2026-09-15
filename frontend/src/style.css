@@ -1,0 +1,60 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e4e7ec;
+  --text: #1f2329;
+  --text-2: #6b7280;
+  --primary: #3b6ef5;
+  --primary-weak: #eef3ff;
+  --danger: #d93026;
+  --ok: #0a8f4c;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: #fff;
+  padding: 8px 16px;
+  transition: opacity 0.15s;
+}
+button:hover { opacity: 0.88; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.ghost {
+  background: var(--panel);
+  color: var(--primary);
+  border: 1px solid var(--border);
+}
+
+input, textarea, select {
+  font: inherit;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--panel);
+  outline: none;
+}
+input:focus, textarea:focus { border-color: var(--primary); }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
