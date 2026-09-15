@@ -21,3 +21,13 @@ ADVISOR_PROMPT = """你是简历优化顾问。基于候选人的简历片段回
 def advise(question: str, resume_chunks: list[RetrievedChunk]) -> str:
     context = "\n---\n".join(c.text for c in resume_chunks) or "（简历知识库为空）"
     return llm.chat([{"role": "user", "content": ADVISOR_PROMPT.format(context=context, question=question)}])
+
+
+def advise_stream(question: str, resume_chunks: list[RetrievedChunk], emit) -> str:
+    """流式版：增量回调 emit({"delta": ...})，返回完整回复。"""
+    context = "\n---\n".join(c.text for c in resume_chunks) or "（简历知识库为空）"
+    parts: list[str] = []
+    for delta in llm.chat_stream([{"role": "user", "content": ADVISOR_PROMPT.format(context=context, question=question)}]):
+        parts.append(delta)
+        emit({"delta": delta})
+    return "".join(parts)

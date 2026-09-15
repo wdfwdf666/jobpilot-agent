@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { fetchHistory, streamChat } from '../api'
 import { renderMarkdown } from '../markdown'
 import type { ChatMessage } from '../types'
@@ -10,10 +10,17 @@ const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const streaming = ref(false)
 const intent = ref('')
+const status = ref('')
 const error = ref('')
 const listEl = ref<HTMLElement | null>(null)
 
 const sessionId = `web-${Math.random().toString(36).slice(2, 8)}`
+
+// 正在等待首个增量（阶段状态/首 token），此时显示状态行而不是空气泡
+const waitingFirstToken = computed(() => {
+  const last = messages.value[messages.value.length - 1]
+  return streaming.value && last?.role === 'assistant' && last.content === ''
+})
 
 const SUGGESTIONS = [
   '分析这个 JD：负责基于大模型的 Agent 应用研发，要求熟悉 RAG、LangChain、Prompt 工程',
@@ -31,6 +38,7 @@ async function send(text?: string) {
   if (!content || streaming.value) return
   input.value = ''
   error.value = ''
+  status.value = ''
   streaming.value = true
   messages.value.push({ role: 'user', content })
 
@@ -41,7 +49,12 @@ async function send(text?: string) {
   try {
     await streamChat(sessionId, content, {
       onDelta: (t) => {
+        status.value = ''
         assistant.content += t
+        scrollToBottom()
+      },
+      onStatus: (s) => {
+        status.value = s
         scrollToBottom()
       },
       onDone: (d) => {
@@ -59,6 +72,7 @@ async function send(text?: string) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     streaming.value = false
+    status.value = ''
     scrollToBottom()
   }
 }
@@ -102,7 +116,9 @@ function rendered(content: string): string {
         <div v-else class="bubble"><pre>{{ m.content }}</pre></div>
       </div>
 
-      <div v-if="streaming" class="typing">正在生成<span class="dots">…</span></div>
+      <div v-if="waitingFirstToken" class="typing">
+        {{ status || '正在生成' }}<span class="dots">…</span>
+      </div>
     </div>
 
     <div v-if="error" class="error">⚠ {{ error }}</div>

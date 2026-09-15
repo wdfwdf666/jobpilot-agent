@@ -55,6 +55,17 @@ class InterviewerAgent:
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
+    def chat_stream(self, user_message: str, emit) -> str:
+        """流式聊天：每个增量回调 emit({"delta": ...})，结束后落历史并返回全文。"""
+        self._history.append({"role": "user", "content": user_message})
+        parts: list[str] = []
+        for delta in llm.chat_stream(self._history):
+            parts.append(delta)
+            emit({"delta": delta})
+        reply = "".join(parts)
+        self._history.append({"role": "assistant", "content": reply})
+        return reply
+
     @property
     def history(self) -> list[dict[str, str]]:
         return self._history

@@ -70,6 +70,9 @@ function dispatchFrame(frame: string, handlers: StreamHandlers): void {
     case 'delta':
       handlers.onDelta((payload as { text: string }).text)
       break
+    case 'status':
+      handlers.onStatus?.((payload as { text: string }).text)
+      break
     case 'artifacts':
       handlers.onArtifacts?.(payload as Record<string, unknown>)
       break

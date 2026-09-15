@@ -33,6 +33,7 @@ export interface SseDone {
 /** 流式聊天回调 */
 export interface StreamHandlers {
   onDelta: (text: string) => void
+  onStatus?: (text: string) => void
   onArtifacts?: (artifacts: SseArtifacts) => void
   onDone?: (done: SseDone) => void
   onError: (message: string) => void

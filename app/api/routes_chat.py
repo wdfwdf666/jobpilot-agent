@@ -1,5 +1,6 @@
-"""聊天接口：SSE 流式输出。
+"""聊天接口：SSE 真流式输出。
 
+链路：节点内 LLM stream=True -> langgraph custom stream -> 这里逐事件转发 SSE。
 面试考点：为什么用 SSE 而不是 WebSocket？
 -> 单向推送场景下 SSE 更轻：走 HTTP、自动重连、代理友好，无需额外协议升级。
 """
@@ -34,26 +35,42 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
 
     def generate():
         try:
-            # 骨架阶段：先整体跑图再伪流式吐出；TODO(P1): 各节点内部接 llm.chat_stream 真流式
-            result = app_graph.invoke({
+            # stream_mode 双通道：
+            #   custom  -> 节点内部推送的 {"delta"|"status": ...}，实时转发
+            #   values  -> 每个节点结束后的全量 state（最后一个即最终态），取 intent/artifacts
+            reply_parts: list[str] = []
+            final_state: dict = {}
+            graph_input = {
                 "messages": history,
                 "user_input": req.message,
                 "intent": "",
                 "reply": "",
                 "artifacts": {},
-            })
-            reply = result.get("reply", "（空回复）")
-            # 伪流式：按行推送，前端体验一致
-            for line in reply.splitlines(True):
-                yield _sse("delta", {"text": line})
+            }
+            for mode, chunk in app_graph.stream(graph_input, stream_mode=["custom", "values"]):
+                if mode == "custom":
+                    if "delta" in chunk:
+                        reply_parts.append(chunk["delta"])
+                        yield _sse("delta", {"text": chunk["delta"]})
+                    elif "status" in chunk:
+                        yield _sse("status", {"text": chunk["status"]})
+                else:  # values
+                    final_state = chunk
+
+            reply = "".join(reply_parts) or final_state.get("reply", "") or "（空回复）"
             history.append(ChatMessage(role="assistant", content=reply))
-            if result.get("artifacts"):
-                yield _sse("artifacts", result["artifacts"])
-            yield _sse("done", {"intent": result.get("intent", "")})
+            if final_state.get("artifacts"):
+                yield _sse("artifacts", final_state["artifacts"])
+            yield _sse("done", {"intent": final_state.get("intent", "")})
         except Exception as exc:  # noqa: BLE001
             yield _sse("error", {"message": str(exc)})
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        # 禁用代理/浏览器缓冲，确保增量逐个到达前端
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/history/{session_id}")
