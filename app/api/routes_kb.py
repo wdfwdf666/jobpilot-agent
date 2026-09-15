@@ -1,6 +1,4 @@
 """知识库管理接口：添加知识（粘贴/上传）、检索测试、统计。"""
-import shutil
-import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -44,10 +42,11 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
     """上传 md/txt/pdf/docx 文件入库。"""
     settings = get_settings()
     settings.uploads_path.mkdir(parents=True, exist_ok=True)
-    dest = settings.uploads_path / file.filename  # type: ignore[arg-type]
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        shutil.move(tmp.name, dest)
+    # Windows 坑：临时文件句柄未关闭时 shutil.move 会报 WinError 32（文件被占用）。
+    # 直接读字节落盘，避免移动打开中的文件；取 filename 部分防止路径穿越。
+    filename = Path(file.filename or "upload").name
+    dest = settings.uploads_path / filename
+    dest.write_bytes(await file.read())
     text = load_text(dest)
     chunks = chunk_text(text)
     embeddings = EmbeddingClient().embed(chunks)

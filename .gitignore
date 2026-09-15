@@ -31,6 +31,7 @@ _check.txt
 _ls.txt
 _git.txt
 _probe.txt
+_upload_resp.json
 
 # Node / 前端
 node_modules/
