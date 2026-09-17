@@ -8,6 +8,8 @@
 3. 为什么显式指定 dimensions？维度决定存储成本与检索精度，且必须与已入库向量保持一致
    —— 换维度等于重建库，所以写进配置并记录。
 """
+import threading
+
 from openai import OpenAI
 
 from app.config import Settings, get_settings
@@ -63,3 +65,24 @@ class EmbeddingClient:
     @property
     def dimensions(self) -> int:
         return self._dimensions
+
+
+# --- 进程级单例 -------------------------------------------------------------
+# 两个理由：
+# 1. 性能：OpenAI 客户端内部持有 httpx 连接池，每请求新建 = 每请求重建连接池，
+#    并发下既浪费又容易触发连接竞争。
+# 2. 正确性：新版 openai SDK 对 `openai.resources.embeddings` 做惰性导入，
+#    首次访问 client.embeddings 才真正 import；若这一步落在请求线程里且多个线程
+#    同时进行，会触发 CPython 的模块锁死锁检测（见 app/warmup.py）。
+_CLIENT: "EmbeddingClient | None" = None
+_CLIENT_LOCK = threading.Lock()
+
+
+def get_embedding_client() -> "EmbeddingClient":
+    """取进程级共享的 Embedding 客户端。"""
+    global _CLIENT
+    if _CLIENT is None:
+        with _CLIENT_LOCK:
+            if _CLIENT is None:
+                _CLIENT = EmbeddingClient()
+    return _CLIENT

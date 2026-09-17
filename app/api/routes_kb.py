@@ -6,10 +6,10 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.rag.chunker import chunk_text
-from app.rag.embeddings import EmbeddingClient
+from app.rag.embeddings import get_embedding_client
 from app.rag.loader import load_text
 from app.rag.resume_parser import parse_resume
-from app.rag.vectorstore import VectorStore
+from app.rag.vectorstore import get_vector_store
 
 router = APIRouter(prefix="/kb", tags=["knowledge-base"])
 
@@ -36,9 +36,9 @@ def add_document(req: IngestRequest) -> dict:
     chunks = chunk_text(req.text)
     if not chunks:
         raise HTTPException(400, "文本过短或无法分块")
-    embeddings = EmbeddingClient().embed(chunks)
-    return VectorStore().add_chunks(chunks, embeddings, source=req.source,
-                                    category=req.category, tags=req.tags)
+    embeddings = get_embedding_client().embed(chunks)
+    return get_vector_store().add_chunks(chunks, embeddings, source=req.source,
+                                         category=req.category, tags=req.tags)
 
 
 @router.post("/upload")
@@ -62,8 +62,8 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
         blocks = profile.to_blocks()
         if not blocks:
             raise HTTPException(400, "简历内容为空或无法解析")
-        embeddings = EmbeddingClient().embed([b["text"] for b in blocks])
-        result = VectorStore().add_chunks(
+        embeddings = get_embedding_client().embed([b["text"] for b in blocks])
+        result = get_vector_store().add_chunks(
             [b["text"] for b in blocks], embeddings, source=filename,
             category=category, tags=sorted({b["section"] for b in blocks}),
         )
@@ -74,20 +74,19 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
     chunks = chunk_text(text)
     if not chunks:
         raise HTTPException(400, "文本过短或无法分块")
-    embeddings = EmbeddingClient().embed(chunks)
-    return VectorStore().add_chunks(chunks, embeddings, source=filename,
-                                    category=category)
+    embeddings = get_embedding_client().embed(chunks)
+    return get_vector_store().add_chunks(chunks, embeddings, source=filename,
+                                         category=category)
 
 
 @router.post("/search")
 def search(req: SearchRequest) -> dict:
-    hits = VectorStore().query(
-        EmbeddingClient().embed([req.query])[0], top_k=req.top_k, category=req.category
+    hits = get_vector_store().query(
+        get_embedding_client().embed([req.query])[0], top_k=req.top_k, category=req.category
     )
     return {"hits": hits}
 
 
 @router.get("/stats")
 def stats() -> dict:
-    store = VectorStore()
-    return {"total_chunks": store.count()}
+    return {"total_chunks": get_vector_store().count()}

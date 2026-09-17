@@ -43,11 +43,15 @@ python scripts/ingest_resume.py "path/to/简历.pdf" --replace
 # 想立刻验证"检索 + LLM 带原文引用回答"这条链路：
 python scripts/ingest_resume.py "path/to/简历.docx" --query "简历里的项目经历有什么可优化的"
 
-# 4. 启动后端（端口 8000）
+# 4. 启动后端（端口 8000）。必须先起后端再起前端
 uvicorn app.main:app --reload
+# 启动日志里会打印 warmup 报告：{"vector_store":"ok (29 chunks)", ...}
+# 这一步把 chroma/openai 的重初始化提前到单线程阶段，避免并发冷启动竞态
 
-# 5. 启动前端（新终端）
-streamlit run frontend/app.py
+# 5. 启动前端（新终端，端口 5173，/api 代理到 8000）
+cd frontend
+npm install
+npm run dev
 ```
 
 ## 技术选型
@@ -77,3 +81,5 @@ streamlit run frontend/app.py
 | `scripts/check_rag.py` | RAG 链路自检（入库→检索） | ✅ |
 | `scripts/check_stream.py` | SSE 真流式 + 引用来源自检（走 HTTP） | ✅ |
 | `scripts/check_agent.py` | Agent 端到端自检（意图路由 + 检索注入 + 流式 + 来源） | ✅ |
+| `scripts/check_concurrent.py` | 并发安全自检（`--mix` 混合端点压测，验重客户端单例） | ✅ |
+| `app/warmup.py` | 启动预热：消除冷启动并发竞态（惰性 import + 重客户端初始化） | ✅ |

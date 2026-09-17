@@ -3,8 +3,10 @@
 面试考点：
 - 为什么用内容哈希做 doc_id？→ 同一文档重复添加时天然幂等，增量更新零成本。
 - 为什么带 metadata？→ category/tags 过滤把检索范围缩小到正确领域，显著提升精度。
+- 为什么必须是进程级单例？→ 见文件末尾 get_vector_store() 的注释（并发冷启动竞态）。
 """
 import hashlib
+import threading
 import uuid
 from typing import Any
 
@@ -94,3 +96,28 @@ class VectorStore:
 
     def delete_by_source(self, source: str) -> None:
         self._collection.delete(where={"source": source})
+
+
+# --- 进程级单例 -------------------------------------------------------------
+# 为什么必须单例（真实踩坑，面试可讲）：
+# uvicorn 把同步端点丢进线程池，多个请求是**真正并行**的。而
+# chromadb.PersistentClient(...) 的构造不只是打开文件——它要初始化 Rust bindings，
+# 再校验 tenant/database。当"首次构造"发生在请求线程里、且多个线程同时执行，
+# 后到的线程会读到还没注册好的 bindings：
+#     AttributeError: 'RustBindingsAPI' object has no attribute 'bindings'
+# 继而被包装成：
+#     ValueError: Could not connect to tenant default_tenant
+# 直接 500。症状极具迷惑性——单请求永远正常，一并发就偶发失败。
+# 同类问题还有 openai SDK 的 resources 子模块惰性导入（见 app/warmup.py）。
+_SINGLETON: VectorStore | None = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def get_vector_store() -> VectorStore:
+    """取进程级共享的向量库实例；构造只发生一次（双检锁）。"""
+    global _SINGLETON
+    if _SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _SINGLETON is None:
+                _SINGLETON = VectorStore()
+    return _SINGLETON

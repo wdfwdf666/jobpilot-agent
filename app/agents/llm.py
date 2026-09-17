@@ -6,19 +6,32 @@
 2. 思考模式（enable_thinking=True）与 json_object 互斥，同时用会报 InvalidParameter。
    所以抽取类任务（json_mode=True）强制关闭思考。
 """
+import threading
 from typing import Any, Iterator
 
 from openai import OpenAI
 
 from app.config import get_settings
 
+# --- 进程级单例 -------------------------------------------------------------
+# 客户端内部持有 httpx 连接池，每轮对话新建 = 反复重建连接池；且新版 openai SDK 对
+# resources 子模块惰性导入，首次访问 client.chat 才真正 import，若发生在并发请求
+# 线程里会触发模块锁死锁（见 app/warmup.py）。
+_LLM: OpenAI | None = None
+_LLM_LOCK = threading.Lock()
+
 
 def get_llm() -> OpenAI:
-    settings = get_settings()
-    key = (settings.llm_api_key or "").strip()
-    if not key or key in {"sk-xxx", "your-api-key"}:
-        raise RuntimeError("LLM_API_KEY 未配置，请先在 .env 填写百炼 API Key")
-    return OpenAI(api_key=key, base_url=settings.llm_base_url)
+    global _LLM
+    if _LLM is None:
+        with _LLM_LOCK:
+            if _LLM is None:
+                settings = get_settings()
+                key = (settings.llm_api_key or "").strip()
+                if not key or key in {"sk-xxx", "your-api-key"}:
+                    raise RuntimeError("LLM_API_KEY 未配置，请先在 .env 填写百炼 API Key")
+                _LLM = OpenAI(api_key=key, base_url=settings.llm_base_url)
+    return _LLM
 
 
 def _build_kwargs(messages: list[dict[str, str]], json_mode: bool) -> dict[str, Any]:

@@ -10,6 +10,7 @@
   values 取最终 state 落历史。
 """
 import operator
+import threading
 from typing import Annotated, Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -20,7 +21,7 @@ from app.agents.interviewer import InterviewerAgent
 from app.agents.jd_analyst import analyze_jd, match_resume
 from app.agents.planner import route
 from app.agents.resume_advisor import advise_stream
-from app.rag.retriever import Retriever
+from app.rag.retriever import get_retriever
 from app.schemas import ChatMessage, RetrievedChunk
 
 
@@ -32,23 +33,20 @@ class AgentState(TypedDict):
     artifacts: dict  # 结构化中间产物：jd_analysis / match_result / grade ...
 
 
-# 懒加载单例：检索器/面试官持有 API 客户端，不能在 import 时实例化，
-# 否则"没有 Key 就 import 失败"，测试和 CI 都跑不起来。
-_retriever: Retriever | None = None
+# 懒加载单例：面试官持有对话历史，进程内复用。
+# 检索器单例统一放在 app.rag.retriever（它构造时拉起 chroma/openai 客户端，
+# 必须在带锁的单例里完成，否则并发请求会竞态，详见该文件注释）。
+# 这里保持懒加载而不是 import 时实例化：否则"没有 Key 就 import 失败"，测试跑不起来。
 _interviewer: InterviewerAgent | None = None
-
-
-def get_retriever() -> Retriever:
-    global _retriever
-    if _retriever is None:
-        _retriever = Retriever()
-    return _retriever
+_INTERVIEWER_LOCK = threading.Lock()
 
 
 def get_interviewer() -> InterviewerAgent:
     global _interviewer
     if _interviewer is None:
-        _interviewer = InterviewerAgent()
+        with _INTERVIEWER_LOCK:
+            if _interviewer is None:
+                _interviewer = InterviewerAgent()
     return _interviewer
 
 
