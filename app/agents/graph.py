@@ -57,6 +57,46 @@ def _emit(writer: Any, event: dict) -> None:
         writer(event)
 
 
+RESUME_CATEGORY = "简历素材"
+
+
+def _search_scoped(query: str, category: str, top_k: int = 5) -> list[dict]:
+    """按类别检索；该类别为空时降级为全库检索（简历还没入库也能给出回答）。
+
+    面试考点：为什么按 category 过滤？→ 简历问答召回八股文是纯噪声，
+    精确率比召回率更影响体验；但空库时必须有兜底，否则功能直接不可用。
+    """
+    hits = get_retriever().search(query, top_k=top_k, category=category)
+    if not hits:
+        hits = get_retriever().search(query, top_k=top_k)
+    return hits
+
+
+def _as_chunks(hits: list[dict]) -> list[RetrievedChunk]:
+    return [
+        RetrievedChunk(
+            text=h["text"],
+            source=h["metadata"].get("source", ""),
+            category=h["metadata"].get("category", ""),
+            score=round(1 - h.get("distance", 0.0), 4),
+        )
+        for h in hits
+    ]
+
+
+def _sources(hits: list[dict]) -> list[dict]:
+    """回传前端的可追溯引用（原文片段 + 来源 + 距离）。"""
+    return [
+        {
+            "text": h["text"][:300],
+            "source": h["metadata"].get("source", ""),
+            "category": h["metadata"].get("category", ""),
+            "distance": round(h.get("distance", 0.0), 4),
+        }
+        for h in hits
+    ]
+
+
 def _stream_llm(messages: list[dict[str, str]]) -> str:
     """流式调 LLM：每个增量通过 custom stream 推给 API 层，返回完整文本。"""
     writer = get_stream_writer()
@@ -78,8 +118,8 @@ def jd_analyst_node(state: AgentState) -> dict:
     analysis = analyze_jd(state["user_input"])
 
     _emit(writer, {"status": "正在检索简历并逐条匹配…"})
-    resume_chunks = get_retriever().search("简历 个人经历 技能 项目", top_k=5)
-    match = match_resume(analysis, "\n".join(c.text for c in resume_chunks))
+    resume_hits = _search_scoped("简历 个人经历 技能 项目", RESUME_CATEGORY, top_k=5)
+    match = match_resume(analysis, "\n".join(h["text"] for h in resume_hits))
 
     summary = f"岗位【{analysis.position}】匹配度 {match.overall_score}/100。\n" + "\n".join(
         f"- {item.requirement}：{item.score} 分" + (f"（{item.gap_advice}）" if item.gap_advice else "")
@@ -88,20 +128,29 @@ def jd_analyst_node(state: AgentState) -> dict:
     # 最终摘要分块推送，前端有渐进渲染效果
     for i in range(0, len(summary), 64):
         _emit(writer, {"delta": summary[i:i + 64]})
-    return {"reply": summary, "artifacts": {"jd_analysis": analysis.model_dump(), "match_result": match.model_dump()}}
+    return {
+        "reply": summary,
+        "artifacts": {
+            "jd_analysis": analysis.model_dump(),
+            "match_result": match.model_dump(),
+            "sources": _sources(resume_hits),
+        },
+    }
 
 
 def resume_advisor_node(state: AgentState) -> dict:
-    chunks = get_retriever().search(state["user_input"], top_k=5)
-    retrieved = [RetrievedChunk(text=c["text"], source=c["metadata"].get("source", ""),
-                                category=c["metadata"].get("category", "")) for c in chunks]
-    reply = advise_stream(state["user_input"], retrieved, emit=lambda e: _emit(get_stream_writer(), e))
-    return {"reply": reply}
+    hits = _search_scoped(state["user_input"], RESUME_CATEGORY, top_k=5)
+    reply = advise_stream(state["user_input"], _as_chunks(hits),
+                          emit=lambda e: _emit(get_stream_writer(), e))
+    return {"reply": reply, "artifacts": {"sources": _sources(hits)}}
 
 
 def interviewer_node(state: AgentState) -> dict:
-    reply = get_interviewer().chat_stream(state["user_input"], emit=lambda e: _emit(get_stream_writer(), e))
-    return {"reply": reply}
+    agent = get_interviewer()
+    hits = agent.retrieve_reference(state["user_input"])
+    reply = agent.chat_stream(state["user_input"], emit=lambda e: _emit(get_stream_writer(), e),
+                              references=_as_chunks(hits))
+    return {"reply": reply, "artifacts": {"sources": _sources(hits)}}
 
 
 def general_chat_node(state: AgentState) -> dict:

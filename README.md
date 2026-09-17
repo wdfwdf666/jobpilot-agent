@@ -3,7 +3,8 @@
 基于 **LangGraph 多 Agent 编排 + RAG + Function Calling** 的求职助手：
 JD 深度分析 → 简历匹配与优化建议（带原文引用）→ 基于个人知识库的模拟面试。
 
-> 详细设计见仓库外的《JobPilot_项目设计.md》。当前进度：**骨架阶段**。
+> 详细设计见仓库外的《JobPilot_项目设计.md》。当前进度：**D1-2 已完成**
+> （项目骨架 ✅ / 简历解析入库 ✅ / 检索与 LLM 打通 ✅：回答带原文引用与可追溯来源）。
 
 ## 架构
 
@@ -32,8 +33,15 @@ python scripts/check_llm.py
 # 校验 RAG 链路（入库 -> 检索），可带自己的文件
 python scripts/check_rag.py
 
-# 3. 导入知识（支持 md/txt/pdf/docx）
+# 3. 导入知识（支持 md/txt/pdf/docx/html）
 python scripts/ingest.py path/to/notes.md --category 八股文
+
+# 3b. 导入简历（自动按板块解析：教育/技能/工作/项目…，检索更精准）
+python scripts/ingest_resume.py "path/to/简历.pdf"
+# 简历改版后重传：清掉同源旧块，避免旧版本残留干扰检索
+python scripts/ingest_resume.py "path/to/简历.pdf" --replace
+# 想立刻验证"检索 + LLM 带原文引用回答"这条链路：
+python scripts/ingest_resume.py "path/to/简历.docx" --query "简历里的项目经历有什么可优化的"
 
 # 4. 启动后端（端口 8000）
 uvicorn app.main:app --reload
@@ -58,11 +66,14 @@ streamlit run frontend/app.py
 | 路径 | 职责 | 状态 |
 |------|------|------|
 | `app/config.py` | 全局配置（pydantic-settings，读 .env） | ✅ |
-| `app/rag/` | 文档解析 → 分块 → 向量化 → 检索（V1 向量 / V2 混合） | 骨架 |
-| `app/agents/` | Planner + 三个子 Agent + LangGraph 编排 | 骨架 |
-| `app/api/` | REST + SSE 流式接口、知识库管理接口 | 骨架 |
+| `app/rag/` | 文档解析（pdf/docx/html）→ 简历板块解析 → 分块 → 向量化 → 检索 | ✅ |
+| `app/agents/` | Planner + 三个子 Agent + LangGraph 编排（真流式，检索按类别注入上下文） | ✅ |
+| `app/api/` | REST + SSE 流式接口、知识库管理接口（category=简历素材 自动走简历解析） | ✅ |
 | `app/eval/` | LLM-as-judge 评测（第 2 周） | 占位 |
-| `frontend/` | Vue 3 + TS 对话界面（聊天流式渲染 + 知识库管理面板） | ✅ |
+| `frontend/` | Vue 3 + TS 对话界面（markdown 渲染 + 流式 + 引用来源可追溯 + 知识库管理） | ✅ |
 | `scripts/ingest.py` | 知识入库 CLI | ✅ |
+| `scripts/ingest_resume.py` | 简历解析入库 CLI（板块预览、--replace、--query 验证） | ✅ |
 | `scripts/check_llm.py` | LLM/Embedding 连通性自检 | ✅ |
-| `scripts/check_rag.py` | RAG 链路端到端自检（入库→检索） | ✅ |
+| `scripts/check_rag.py` | RAG 链路自检（入库→检索） | ✅ |
+| `scripts/check_stream.py` | SSE 真流式 + 引用来源自检（走 HTTP） | ✅ |
+| `scripts/check_agent.py` | Agent 端到端自检（意图路由 + 检索注入 + 流式 + 来源） | ✅ |

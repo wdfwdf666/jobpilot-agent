@@ -8,9 +8,13 @@ from app.config import get_settings
 from app.rag.chunker import chunk_text
 from app.rag.embeddings import EmbeddingClient
 from app.rag.loader import load_text
+from app.rag.resume_parser import parse_resume
 from app.rag.vectorstore import VectorStore
 
 router = APIRouter(prefix="/kb", tags=["knowledge-base"])
+
+# 简历走独立解析策略的类别名
+RESUME_CATEGORY = "简历素材"
 
 
 class IngestRequest(BaseModel):
@@ -39,7 +43,11 @@ def add_document(req: IngestRequest) -> dict:
 
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...), category: str = "通用") -> dict:
-    """上传 md/txt/pdf/docx 文件入库。"""
+    """上传 md/txt/pdf/docx/html 文件入库。
+
+    category=简历素材 时自动走简历解析器（按板块切分 + 板块标签），
+    其他类别按通用文档分块。这是"同一入口、不同解析策略"的路由式设计。
+    """
     settings = get_settings()
     settings.uploads_path.mkdir(parents=True, exist_ok=True)
     # Windows 坑：临时文件句柄未关闭时 shutil.move 会报 WinError 32（文件被占用）。
@@ -48,9 +56,26 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
     dest = settings.uploads_path / filename
     dest.write_bytes(await file.read())
     text = load_text(dest)
+
+    if category == RESUME_CATEGORY:
+        profile = parse_resume(text)
+        blocks = profile.to_blocks()
+        if not blocks:
+            raise HTTPException(400, "简历内容为空或无法解析")
+        embeddings = EmbeddingClient().embed([b["text"] for b in blocks])
+        result = VectorStore().add_chunks(
+            [b["text"] for b in blocks], embeddings, source=filename,
+            category=category, tags=sorted({b["section"] for b in blocks}),
+        )
+        result["sections"] = [s.name for s in profile.sections]
+        result["structured"] = profile.structured
+        return result
+
     chunks = chunk_text(text)
+    if not chunks:
+        raise HTTPException(400, "文本过短或无法分块")
     embeddings = EmbeddingClient().embed(chunks)
-    return VectorStore().add_chunks(chunks, embeddings, source=file.filename or "upload",
+    return VectorStore().add_chunks(chunks, embeddings, source=filename,
                                     category=category)
 
 

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { fetchHistory, streamChat } from '../api'
 import { renderMarkdown } from '../markdown'
-import type { ChatMessage } from '../types'
+import type { ChatMessage, SourceRef } from '../types'
 
 const emit = defineEmits<{ (e: 'kb-changed'): void }>()
 
@@ -42,7 +42,9 @@ async function send(text?: string) {
   streaming.value = true
   messages.value.push({ role: 'user', content })
 
-  const assistant = { role: 'assistant' as const, content: '' }
+  // 必须是 reactive 对象：流式期间逐字改 content 才能触发视图更新
+  // （普通对象 push 进数组后，直接改它不会触发响应式——这是真实的踩坑点）
+  const assistant = reactive<ChatMessage>({ role: 'assistant', content: '' })
   messages.value.push(assistant)
   scrollToBottom()
 
@@ -60,6 +62,12 @@ async function send(text?: string) {
       onDone: (d) => {
         intent.value = d.intent
         // 面试官等 Agent 会读知识库，入库状态可能变化，这里暂不联动，留给知识库面板
+      },
+      onArtifacts: (a) => {
+        // 检索命中的原文片段：让回答可追溯（面试演示的关键卖点）
+        if (Array.isArray(a.sources)) {
+          assistant.sources = a.sources as SourceRef[]
+        }
       },
       onError: (m) => {
         error.value = m
@@ -112,8 +120,22 @@ function rendered(content: string): string {
         class="bubble-row"
         :class="m.role"
       >
-        <div v-if="m.role === 'assistant'" class="bubble md" v-html="rendered(m.content)" />
-        <div v-else class="bubble"><pre>{{ m.content }}</pre></div>
+        <div class="bubble-wrap">
+          <div v-if="m.role === 'assistant'" class="bubble md" v-html="rendered(m.content)" />
+          <div v-else class="bubble"><pre>{{ m.content }}</pre></div>
+
+          <details v-if="m.sources && m.sources.length" class="sources">
+            <summary>引用来源（{{ m.sources.length }} 段原文）</summary>
+            <div v-for="(s, j) in m.sources" :key="j" class="source-item">
+              <div class="source-meta">
+                <span class="cat">{{ s.category }}</span>
+                <span>{{ s.source }}</span>
+                <span class="dist">距离 {{ s.distance.toFixed(3) }}</span>
+              </div>
+              <p>{{ s.text }}</p>
+            </div>
+          </details>
+        </div>
       </div>
 
       <div v-if="waitingFirstToken" class="typing">
@@ -165,8 +187,16 @@ function rendered(content: string): string {
 
 .bubble-row { display: flex; margin-bottom: 14px; }
 .bubble-row.user { justify-content: flex-end; }
-.bubble {
+.bubble-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   max-width: 78%;
+  min-width: 0;
+}
+.bubble-row.user .bubble-wrap { align-items: flex-end; }
+.bubble {
+  max-width: 100%;
   padding: 10px 14px;
   border-radius: 12px;
   background: var(--primary-weak);
@@ -174,6 +204,39 @@ function rendered(content: string): string {
 .bubble-row.user .bubble {
   background: var(--primary);
   color: #fff;
+}
+
+/* 引用来源：可折叠，回答可追溯到原文片段 */
+.sources {
+  width: 100%;
+  font-size: 12px;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+}
+.sources summary { cursor: pointer; user-select: none; }
+.source-item { margin-top: 8px; }
+.source-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.source-meta .cat {
+  background: var(--primary-weak);
+  color: var(--primary);
+  padding: 0 6px;
+  border-radius: 5px;
+}
+.source-meta .dist { margin-left: auto; }
+.source-item p {
+  margin: 4px 0 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .bubble pre {
   margin: 0;

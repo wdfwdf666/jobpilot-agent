@@ -118,7 +118,8 @@ function show(msg: string, type: 'ok' | 'err') {
       </template>
 
       <template v-else-if="tab === 'upload'">
-        <input ref="fileInput" type="file" accept=".md,.txt,.pdf,.docx" />
+        <input ref="fileInput" type="file" accept=".md,.txt,.pdf,.docx,.html,.htm" />
+        <p class="tip">选择「简历素材」分类上传时会自动按板块解析（教育/技能/项目…），检索更准。</p>
         <div class="row">
           <select v-model="category">
             <option v-for="c in CATEGORIES" :key="c" :value="c">{{ c }}</option>
@@ -191,6 +192,7 @@ function show(msg: string, type: 'ok' | 'err') {
 .hit-text { margin: 6px 0 10px; font-size: 13px; color: var(--text); }
 
 .hint { color: var(--text-2); font-size: 13px; }
+.tip { color: var(--text-2); font-size: 12px; margin: 0; }
 .notice { font-size: 13px; padding: 8px 10px; border-radius: var(--radius); }
 .notice.ok { background: #e8f6ee; color: var(--ok); }
 .notice.err { background: #fdeceb; color: var(--danger); }
