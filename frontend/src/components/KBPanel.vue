@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { addDocument, fetchStats, searchKb, uploadDocument } from '../api'
 import type { KbHit } from '../types'
+import KBManager from './KBManager.vue'
 
 const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -9,7 +10,7 @@ const emit = defineEmits<{ (e: 'changed'): void }>()
 const CATEGORIES = ['八股文', '项目笔记', '行业认知', '简历素材'] as const
 
 const totalChunks = ref(0)
-const tab = ref<'add' | 'upload' | 'search'>('add')
+const tab = ref<'add' | 'upload' | 'manage' | 'search'>('add')
 
 // 粘贴入库
 const text = ref('')
@@ -20,6 +21,11 @@ const noticeType = ref<'ok' | 'err'>('ok')
 
 // 上传入库
 const fileInput = ref<HTMLInputElement | null>(null)
+
+function goResumeUpload() {
+  tab.value = 'upload'
+  category.value = '简历素材'
+}
 
 // 检索测试
 const query = ref('')
@@ -94,7 +100,7 @@ function show(msg: string, type: 'ok' | 'err') {
 
     <div class="tabs">
       <button
-        v-for="t in ([['add', '粘贴入库'], ['upload', '上传文件'], ['search', '检索测试']] as const)"
+        v-for="t in ([['add', '粘贴入库'], ['upload', '上传文件'], ['manage', '文档管理'], ['search', '检索测试']] as const)"
         :key="t[0]"
         class="tab"
         :class="{ active: tab === t[0] }"
@@ -103,6 +109,11 @@ function show(msg: string, type: 'ok' | 'err') {
     </div>
 
     <div class="body">
+      <button class="quick-resume" @click="goResumeUpload">
+        <span class="qr-title">上传我的简历</span>
+        <span class="qr-sub">选「简历素材」分类，自动按板块解析入库（教育 / 技能 / 项目…）</span>
+      </button>
+
       <template v-if="tab === 'add'">
         <textarea
           v-model="text"
@@ -126,6 +137,10 @@ function show(msg: string, type: 'ok' | 'err') {
           </select>
           <button :disabled="busy" @click="submitFile">上传并入库</button>
         </div>
+      </template>
+
+      <template v-else-if="tab === 'manage'">
+        <KBManager :refresh-key="props.refreshKey" @changed="emit('changed')" />
       </template>
 
       <template v-else>
@@ -173,6 +188,22 @@ function show(msg: string, type: 'ok' | 'err') {
 .body textarea { resize: vertical; }
 .row { display: flex; gap: 10px; }
 .row input, .row select { flex: 1; min-width: 0; }
+
+.quick-resume {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--primary-weak);
+  border: 1px dashed var(--primary);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.quick-resume:hover { filter: brightness(0.97); }
+.qr-title { font-size: 14px; font-weight: 700; color: var(--primary); }
+.qr-sub { font-size: 12px; color: var(--text-2); }
 
 .hit { border-top: 1px solid var(--border); padding-top: 8px; }
 .hit-meta {

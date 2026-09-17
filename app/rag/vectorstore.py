@@ -94,8 +94,72 @@ class VectorStore:
     def count(self) -> int:
         return self._collection.count()
 
-    def delete_by_source(self, source: str) -> None:
-        self._collection.delete(where={"source": source})
+    # --- 文档管理 ---------------------------------------------------------------
+
+    def list_documents(self) -> list[dict[str, Any]]:
+        """按 (source, category) 分组列出库内文档及块数，供管理面板展示。"""
+        result = self._collection.get(include=["metadatas"])
+        docs: dict[tuple[str, str], dict[str, Any]] = {}
+        for meta in result["metadatas"] or []:
+            source = str(meta.get("source") or "unknown")
+            category = str(meta.get("category") or "通用")
+            key = (source, category)
+            entry = docs.setdefault(key, {"source": source, "category": category, "chunks": 0})
+            entry["chunks"] += 1
+        return sorted(docs.values(), key=lambda d: (d["category"], d["source"]))
+
+    def get_chunks(self, source: str, category: str | None = None) -> list[dict[str, Any]]:
+        """取某文档（source [+ category]）下的全部块，含原文与元数据。"""
+        where: dict[str, Any] = {"source": source}
+        if category:
+            where = {"$and": [{"source": source}, {"category": category}]}
+        result = self._collection.get(where=where, include=["documents", "metadatas"])
+        return [
+            {
+                "id": result["ids"][i],
+                "text": (result["documents"] or [])[i],
+                "metadata": (result["metadatas"] or [])[i],
+            }
+            for i in range(len(result["ids"]))
+        ]
+
+    def delete_by_source(self, source: str, category: str | None = None) -> int:
+        """删除整个文档；带 category 时只删该分类下的同名文档。"""
+        where: dict[str, Any] = {"source": source}
+        if category:
+            where = {"$and": [{"source": source}, {"category": category}]}
+        before = self._collection.count()
+        self._collection.delete(where=where)
+        return before - self._collection.count()
+
+    def delete_chunk(self, chunk_id: str) -> bool:
+        """删除单个块。id 不存在时返回 False（幂等保护）。"""
+        if not self._collection.get(ids=[chunk_id])["ids"]:
+            return False
+        self._collection.delete(ids=[chunk_id])
+        return True
+
+    def update_chunk_text(
+        self, chunk_id: str, new_text: str, embedding: list[float]
+    ) -> dict[str, Any]:
+        """修改块文本：旧 id 删除 -> 新文本重新向量化入库（内容哈希 id 随内容变化）。
+
+        元数据（source/category/tags）原样保留，所以改完仍归在同一文档下。
+        若新文本与其他块哈希撞车，则只删不增（天然去重）。
+        """
+        old = self._collection.get(ids=[chunk_id], include=["metadatas"])
+        if not old["ids"]:
+            return {"updated": 0}
+        meta = old["metadatas"][0]
+        source = str(meta.get("source") or "manual")
+        self._collection.delete(ids=[chunk_id])
+        new_id = make_doc_id(new_text, source)
+        deduped = bool(self._collection.get(ids=[new_id])["ids"])
+        if not deduped:
+            self._collection.add(
+                ids=[new_id], documents=[new_text], embeddings=[embedding], metadatas=[meta]
+            )
+        return {"updated": 1, "deduped": deduped}
 
 
 # --- 进程级单例 -------------------------------------------------------------

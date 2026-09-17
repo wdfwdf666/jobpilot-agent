@@ -28,6 +28,24 @@ export interface IngestResult {
   total_chunks: number
 }
 
+/** 文档管理：按 source+category 分组的一个文档 */
+export interface KbDocument {
+  source: string
+  category: string
+  chunks: number
+}
+
+/** 文档内的单个块 */
+export interface KbChunk {
+  id: string
+  text: string
+  metadata: {
+    source?: string
+    category?: string
+    tags?: string
+  }
+}
+
 /** SSE 事件负载 */
 export interface SseDelta {
   text: string

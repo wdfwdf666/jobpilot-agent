@@ -8,6 +8,8 @@
 import type {
   ChatMessage,
   IngestResult,
+  KbChunk,
+  KbDocument,
   KbHit,
   StreamHandlers,
 } from './types'
@@ -141,4 +143,52 @@ export async function fetchStats(): Promise<number> {
   if (!resp.ok) return 0
   const data = (await resp.json()) as { total_chunks: number }
   return data.total_chunks
+}
+
+// ---------- 知识库文档管理 ----------
+
+export async function fetchDocuments(): Promise<KbDocument[]> {
+  const resp = await fetch(`${BASE}/kb/documents`)
+  if (!resp.ok) throw new Error('获取文档列表失败')
+  const data = (await resp.json()) as { documents: KbDocument[] }
+  return data.documents
+}
+
+export async function fetchChunks(source: string, category: string): Promise<KbChunk[]> {
+  const params = new URLSearchParams({ source, category })
+  const resp = await fetch(`${BASE}/kb/chunks?${params}`)
+  if (!resp.ok) throw new Error('获取文档内容失败')
+  const data = (await resp.json()) as { chunks: KbChunk[] }
+  return data.chunks
+}
+
+export async function deleteDocument(source: string, category: string): Promise<number> {
+  const params = new URLSearchParams({ source, category })
+  const resp = await fetch(`${BASE}/kb/documents?${params}`, { method: 'DELETE' })
+  if (!resp.ok) {
+    const detail = ((await resp.json()) as { detail?: string }).detail ?? resp.status
+    throw new Error(`删除失败：${detail}`)
+  }
+  const data = (await resp.json()) as { removed: number }
+  return data.removed
+}
+
+export async function deleteChunk(chunkId: string): Promise<void> {
+  const resp = await fetch(`${BASE}/kb/chunks/${chunkId}`, { method: 'DELETE' })
+  if (!resp.ok) {
+    const detail = ((await resp.json()) as { detail?: string }).detail ?? resp.status
+    throw new Error(`删除失败：${detail}`)
+  }
+}
+
+export async function updateChunk(chunkId: string, text: string): Promise<void> {
+  const resp = await fetch(`${BASE}/kb/chunks/${chunkId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!resp.ok) {
+    const detail = ((await resp.json()) as { detail?: string }).detail ?? resp.status
+    throw new Error(`修改失败：${detail}`)
+  }
 }
