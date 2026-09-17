@@ -25,13 +25,11 @@ Thumbs.db
 # 评测产物
 eval_results/
 *.log
-_pip.log
-_test.log
-_check.txt
-_ls.txt
-_git.txt
-_probe.txt
-_upload_resp.json
+
+# 本地调试临时文件（统一 _ 前缀，避免逐个补规则时漏掉）
+_*.txt
+_*.log
+_*.json
 
 # Node / 前端
 node_modules/
