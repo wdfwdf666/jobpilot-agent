@@ -28,6 +28,24 @@ export interface IngestResult {
   total_chunks: number
 }
 
+/** 批量上传：单个文件的处理结果 */
+export interface UploadFileResult {
+  filename: string
+  ok: boolean
+  added?: number
+  skipped?: number
+  error?: string
+}
+
+/** 批量上传：整批汇总 */
+export interface UploadBatchResult {
+  results: UploadFileResult[]
+  ok_count: number
+  fail_count: number
+  added: number
+  skipped: number
+}
+
 /** 文档管理：按 source+category 分组的一个文档 */
 export interface KbDocument {
   source: string

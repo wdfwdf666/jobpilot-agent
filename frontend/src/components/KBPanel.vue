@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { addDocument, fetchStats, searchKb, uploadDocument } from '../api'
-import type { KbHit } from '../types'
+import { addDocument, fetchStats, searchKb, uploadDocumentsBatch } from '../api'
+import type { KbHit, UploadFileResult } from '../types'
 import KBManager from './KBManager.vue'
 
 const props = defineProps<{ refreshKey: number }>()
@@ -19,8 +19,9 @@ const busy = ref(false)
 const notice = ref('')
 const noticeType = ref<'ok' | 'err'>('ok')
 
-// 上传入库
+// 上传入库（支持多选，批量提交）
 const fileInput = ref<HTMLInputElement | null>(null)
+const fileResults = ref<UploadFileResult[]>([])
 
 function goResumeUpload() {
   tab.value = 'upload'
@@ -55,13 +56,18 @@ async function submitText() {
 }
 
 async function submitFile() {
-  const file = fileInput.value?.files?.[0]
-  if (!file || busy.value) return
+  const files = Array.from(fileInput.value?.files ?? [])
+  if (!files.length || busy.value) return
   busy.value = true
   notice.value = ''
   try {
-    const r = await uploadDocument(file, category.value)
-    show(`「${file.name}」已入库 ${r.added} 块${r.skipped ? `，去重跳过 ${r.skipped} 块` : ''}`, 'ok')
+    const r = await uploadDocumentsBatch(files, category.value)
+    // 单文件失败不影响整批：汇总 + 逐文件明细都展示出来
+    const okSummary = `成功 ${r.ok_count} 个、共入库 ${r.added} 块` +
+      (r.skipped ? `（去重跳过 ${r.skipped} 块）` : '')
+    if (r.fail_count) show(`批量上传：${okSummary}，失败 ${r.fail_count} 个（见明细）`, 'err')
+    else show(`批量上传：${okSummary}`, 'ok')
+    fileResults.value = r.results
     if (fileInput.value) fileInput.value.value = ''
     emit('changed')
   } catch (e) {
@@ -129,14 +135,21 @@ function show(msg: string, type: 'ok' | 'err') {
       </template>
 
       <template v-else-if="tab === 'upload'">
-        <input ref="fileInput" type="file" accept=".md,.txt,.pdf,.docx,.html,.htm" />
-        <p class="tip">选择「简历素材」分类上传时会自动按板块解析（教育/技能/项目…），检索更准。</p>
+        <input ref="fileInput" type="file" multiple accept=".md,.txt,.pdf,.docx,.html,.htm" />
+        <p class="tip">可按住 Ctrl / Shift 多选文件批量上传；「简历素材」分类会自动按板块解析（教育/技能/项目…）。</p>
         <div class="row">
           <select v-model="category">
             <option v-for="c in CATEGORIES" :key="c" :value="c">{{ c }}</option>
           </select>
           <button :disabled="busy" @click="submitFile">上传并入库</button>
         </div>
+        <ul v-if="fileResults.length" class="file-results">
+          <li v-for="r in fileResults" :key="r.filename" :class="r.ok ? 'ok' : 'err'">
+            <span class="mark">{{ r.ok ? '✓' : '✗' }}</span>
+            <span class="name">{{ r.filename }}</span>
+            <span class="detail">{{ r.ok ? `入库 ${r.added} 块${r.skipped ? `，去重跳过 ${r.skipped}` : ''}` : r.error }}</span>
+          </li>
+        </ul>
       </template>
 
       <template v-else-if="tab === 'manage'">
@@ -224,6 +237,27 @@ function show(msg: string, type: 'ok' | 'err') {
 
 .hint { color: var(--text-2); font-size: 13px; }
 .tip { color: var(--text-2); font-size: 12px; margin: 0; }
+
+.file-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.file-results li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.file-results li.ok .mark { color: var(--ok); }
+.file-results li.err .mark { color: var(--danger); }
+.file-results .name { font-weight: 600; white-space: nowrap; }
+.file-results .detail {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-results li.err .detail { color: var(--danger); }
 .notice { font-size: 13px; padding: 8px 10px; border-radius: var(--radius); }
 .notice.ok { background: #e8f6ee; color: var(--ok); }
 .notice.err { background: #fdeceb; color: var(--danger); }

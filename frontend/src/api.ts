@@ -12,6 +12,7 @@ import type {
   KbDocument,
   KbHit,
   StreamHandlers,
+  UploadBatchResult,
 } from './types'
 
 const BASE = '/api'
@@ -126,6 +127,24 @@ export async function uploadDocument(file: File, category: string): Promise<Inge
     throw new Error(`上传失败：${detail}`)
   }
   return (await resp.json()) as IngestResult
+}
+
+/** 批量上传：一次请求带全部文件，后端逐个处理、单文件失败不影响整批 */
+export async function uploadDocumentsBatch(
+  files: File[],
+  category: string,
+): Promise<UploadBatchResult> {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  const resp = await fetch(`${BASE}/kb/upload-batch?category=${encodeURIComponent(category)}`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!resp.ok) {
+    const detail = ((await resp.json()) as { detail?: string }).detail ?? resp.status
+    throw new Error(`批量上传失败：${detail}`)
+  }
+  return (await resp.json()) as UploadBatchResult
 }
 
 export async function searchKb(query: string, topK = 5): Promise<KbHit[]> {

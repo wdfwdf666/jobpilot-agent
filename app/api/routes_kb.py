@@ -50,9 +50,8 @@ def add_document(req: IngestRequest) -> dict:
                                          category=req.category, tags=req.tags)
 
 
-@router.post("/upload")
-async def upload_document(file: UploadFile = File(...), category: str = "通用") -> dict:
-    """上传 md/txt/pdf/docx/html 文件入库。
+def _ingest_file(filename: str, data: bytes, category: str) -> dict:
+    """单文件入库（上传/批量上传共用）。
 
     category=简历素材 时自动走简历解析器（按板块切分 + 板块标签），
     其他类别按通用文档分块。这是"同一入口、不同解析策略"的路由式设计。
@@ -61,9 +60,9 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
     settings.uploads_path.mkdir(parents=True, exist_ok=True)
     # Windows 坑：临时文件句柄未关闭时 shutil.move 会报 WinError 32（文件被占用）。
     # 直接读字节落盘，避免移动打开中的文件；取 filename 部分防止路径穿越。
-    filename = Path(file.filename or "upload").name
-    dest = settings.uploads_path / filename
-    dest.write_bytes(await file.read())
+    safe_name = Path(filename or "upload").name
+    dest = settings.uploads_path / safe_name
+    dest.write_bytes(data)
     text = load_text(dest)
 
     if category == RESUME_CATEGORY:
@@ -73,7 +72,7 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
             raise HTTPException(400, "简历内容为空或无法解析")
         embeddings = get_embedding_client().embed([b["text"] for b in blocks])
         result = get_vector_store().add_chunks(
-            [b["text"] for b in blocks], embeddings, source=filename,
+            [b["text"] for b in blocks], embeddings, source=safe_name,
             category=category, tags=sorted({b["section"] for b in blocks}),
         )
         result["sections"] = [s.name for s in profile.sections]
@@ -84,8 +83,48 @@ async def upload_document(file: UploadFile = File(...), category: str = "通用"
     if not chunks:
         raise HTTPException(400, "文本过短或无法分块")
     embeddings = get_embedding_client().embed(chunks)
-    return get_vector_store().add_chunks(chunks, embeddings, source=filename,
+    return get_vector_store().add_chunks(chunks, embeddings, source=safe_name,
                                          category=category)
+
+
+@router.post("/upload")
+async def upload_document(file: UploadFile = File(...), category: str = "通用") -> dict:
+    """上传单个文件入库（批量请用 /upload-batch）。"""
+    return _ingest_file(file.filename or "upload", await file.read(), category)
+
+
+@router.post("/upload-batch")
+async def upload_documents_batch(
+    files: list[UploadFile] = File(...), category: str = "通用"
+) -> dict:
+    """批量上传入库（category 走 query string，与 /upload 保持一致）。
+
+    逐个文件独立处理：某个文件解析失败只记录错误，不中断整批。
+    返回 per-file 结果，前端据此展示「成功 N / 失败 M」明细。
+    """
+    if not files:
+        raise HTTPException(400, "未选择任何文件")
+    results = []
+    for f in files:
+        name = f.filename or "upload"
+        try:
+            r = _ingest_file(name, await f.read(), category)
+            results.append({
+                "filename": name, "ok": True,
+                "added": r["added"], "skipped": r["skipped"],
+            })
+        except HTTPException as exc:
+            results.append({"filename": name, "ok": False, "error": str(exc.detail)})
+        except Exception as exc:  # noqa: BLE001 —— 单文件异常不拖垮整批
+            results.append({"filename": name, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    ok_count = sum(1 for r in results if r["ok"])
+    return {
+        "results": results,
+        "ok_count": ok_count,
+        "fail_count": len(results) - ok_count,
+        "added": sum(r.get("added", 0) for r in results if r["ok"]),
+        "skipped": sum(r.get("skipped", 0) for r in results if r["ok"]),
+    }
 
 
 @router.post("/search")
