@@ -105,8 +105,21 @@ def _stream_llm(messages: list[dict[str, str]]) -> str:
     return "".join(parts)
 
 
+# 模拟面试进行中时，候选人回答里不会有"面试"等关键词，逐条消息独立路由
+# 会把回答错送进通用聊天（真实踩坑）。所以：有挂起问题 -> 本会话消息都进面试官，
+# 直到用户明确结束。
+INTERVIEW_EXIT_KEYWORDS = ("结束面试", "停止面试", "不面了", "面试结束")
+
+
 def route_node(state: AgentState) -> dict:
-    return {"intent": route(state["user_input"])}
+    agent = get_interviewer()
+    text = state["user_input"]
+    if agent.pending_question is not None:
+        if any(kw in text for kw in INTERVIEW_EXIT_KEYWORDS):
+            agent.end_interview()  # 清掉挂起问题与对话历史，后续消息恢复正常路由
+        else:
+            return {"intent": "mock_interview"}
+    return {"intent": route(text)}
 
 
 def jd_analyst_node(state: AgentState) -> dict:
@@ -119,10 +132,15 @@ def jd_analyst_node(state: AgentState) -> dict:
     resume_hits = _search_scoped("简历 个人经历 技能 项目", RESUME_CATEGORY, top_k=5)
     match = match_resume(analysis, "\n".join(h["text"] for h in resume_hits))
 
-    summary = f"岗位【{analysis.position}】匹配度 {match.overall_score}/100。\n" + "\n".join(
-        f"- {item.requirement}：{item.score} 分" + (f"（{item.gap_advice}）" if item.gap_advice else "")
-        for item in match.items[:6]
-    )
+    # 摘要带简历原文引用：每条匹配项标注证据出处，没有证据的给补强建议
+    lines = [f"岗位【{analysis.position}】综合匹配度 {match.overall_score}/100", ""]
+    for item in match.items[:6]:
+        lines.append(f"- {item.requirement}：{item.score} 分")
+        if item.evidence:
+            lines.append(f"  依据简历：「{item.evidence[:80]}」")
+        if item.gap_advice:
+            lines.append(f"  建议：{item.gap_advice}")
+    summary = "\n".join(lines)
     # 最终摘要分块推送，前端有渐进渲染效果
     for i in range(0, len(summary), 64):
         _emit(writer, {"delta": summary[i:i + 64]})
@@ -145,10 +163,15 @@ def resume_advisor_node(state: AgentState) -> dict:
 
 def interviewer_node(state: AgentState) -> dict:
     agent = get_interviewer()
+    writer = get_stream_writer()
     hits = agent.retrieve_reference(state["user_input"])
-    reply = agent.chat_stream(state["user_input"], emit=lambda e: _emit(get_stream_writer(), e),
-                              references=_as_chunks(hits))
-    return {"reply": reply, "artifacts": {"sources": _sources(hits)}}
+    # 面试官是状态机：无挂起问题则出题，有挂起问题则批改+追问（见 interviewer.py）
+    reply, extra = agent.next_turn(
+        state["user_input"],
+        emit=lambda e: _emit(writer, e),
+        references=_as_chunks(hits),
+    )
+    return {"reply": reply, "artifacts": {"sources": _sources(hits), **extra}}
 
 
 def general_chat_node(state: AgentState) -> dict:

@@ -63,7 +63,8 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                 yield _sse("artifacts", final_state["artifacts"])
             yield _sse("done", {"intent": final_state.get("intent", "")})
         except Exception as exc:  # noqa: BLE001
-            yield _sse("error", {"message": str(exc)})
+            # 带上异常类型名：只发 str(exc) 时 KeyError 这类错误只剩一段引号文字，没法定位
+            yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
 
     return StreamingResponse(
         generate(),

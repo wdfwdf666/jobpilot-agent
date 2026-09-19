@@ -38,7 +38,10 @@ class RetrievedChunk(BaseModel):
 
 
 def parse_json_output(raw: str) -> dict[str, Any]:
-    """容错解析 LLM 的 JSON 输出（剥掉 markdown 代码块围栏）。"""
+    """容错解析 LLM 的 JSON 输出（剥掉 markdown 代码块围栏）。
+
+    解析失败时带上原始输出前 200 字符再抛错——只报 "Expecting value" 根本没法排查。
+    """
     import json
     import re
 
@@ -46,4 +49,7 @@ def parse_json_output(raw: str) -> dict[str, Any]:
     match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if match:
         text = match.group(1)
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"LLM 输出不是合法 JSON（{e}），原始输出前 200 字符：{raw[:200]!r}") from e

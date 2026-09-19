@@ -22,7 +22,7 @@ def analyze_jd(jd_text: str) -> JDAnalysis:
 
 MATCH_PROMPT = """你是简历匹配专家。对照岗位要求逐条匹配候选人简历，给出评分和改进建议。
 规则（防幻觉）：evidence 必须是简历原文片段，简历中找不到就置空并在 gap_advice 给出补强建议。
-只输出 JSON：overall_score, items[{requirement, evidence, score, gap_advice}]。
+只输出 JSON：overall_score, items[{{requirement, evidence, score, gap_advice}}]。
 
 岗位要求：{requirements}
 
