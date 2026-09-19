@@ -28,26 +28,29 @@ from app.schemas import ChatMessage, RetrievedChunk
 class AgentState(TypedDict):
     messages: Annotated[list[ChatMessage], operator.add]  # 对话历史（追加式）
     user_input: str
+    session_id: str
+    force_intent: str  # 前端显式选择的模式；"auto" 表示由 Planner 路由
     intent: str
     reply: str
     artifacts: dict  # 结构化中间产物：jd_analysis / match_result / grade ...
 
 
-# 懒加载单例：面试官持有对话历史，进程内复用。
-# 检索器单例统一放在 app.rag.retriever（它构造时拉起 chroma/openai 客户端，
-# 必须在带锁的单例里完成，否则并发请求会竞态，详见该文件注释）。
-# 这里保持懒加载而不是 import 时实例化：否则"没有 Key 就 import 失败"，测试跑不起来。
-_interviewer: InterviewerAgent | None = None
-_INTERVIEWER_LOCK = threading.Lock()
+# 懒加载单例：面试官持有对话历史与挂起题目，必须按会话隔离——
+# 全局共享单例会把上个会话的挂起题目泄漏到下个会话（真实踩坑：
+# 新会话说"分析这个 JD"却被旧题目的批改流程接管）。
+_INTERVIEWERS: dict[str, InterviewerAgent] = {}
+_INTERVIEWERS_LOCK = threading.Lock()
+_MAX_INTERVIEW_SESSIONS = 50  # 简单防膨胀：超过就淘汰最早创建的会话
 
 
-def get_interviewer() -> InterviewerAgent:
-    global _interviewer
-    if _interviewer is None:
-        with _INTERVIEWER_LOCK:
-            if _interviewer is None:
-                _interviewer = InterviewerAgent()
-    return _interviewer
+def get_interviewer(session_id: str = "default") -> InterviewerAgent:
+    with _INTERVIEWERS_LOCK:
+        agent = _INTERVIEWERS.get(session_id)
+        if agent is None:
+            if len(_INTERVIEWERS) >= _MAX_INTERVIEW_SESSIONS:
+                _INTERVIEWERS.pop(next(iter(_INTERVIEWERS)))
+            agent = _INTERVIEWERS[session_id] = InterviewerAgent()
+        return agent
 
 
 def _emit(writer: Any, event: dict) -> None:
@@ -106,20 +109,41 @@ def _stream_llm(messages: list[dict[str, str]]) -> str:
 
 
 # 模拟面试进行中时，候选人回答里不会有"面试"等关键词，逐条消息独立路由
-# 会把回答错送进通用聊天（真实踩坑）。所以：有挂起问题 -> 本会话消息都进面试官，
-# 直到用户明确结束。
+# 会把回答错送进通用聊天（真实踩坑）。所以挂起题目存在时本会话消息默认进面试官，
+# 但三类例外要放行：明确结束、重新开一场、明确转向其他任务（如新的 JD 分析）。
 INTERVIEW_EXIT_KEYWORDS = ("结束面试", "停止面试", "不面了", "面试结束")
+INTERVIEW_START_KEYWORDS = ("模拟面试", "来个面试", "面试我", "开始面试", "考我")
+# 强意图词：命中说明用户在面试途中明确发起了其他任务，放行并结束当前面试
+STRONG_TASK_KEYWORDS = ("jd", "岗位", "职位", "简历")
 
 
 def route_node(state: AgentState) -> dict:
-    agent = get_interviewer()
     text = state["user_input"]
-    if agent.pending_question is not None:
-        if any(kw in text for kw in INTERVIEW_EXIT_KEYWORDS):
-            agent.end_interview()  # 清掉挂起问题与对话历史，后续消息恢复正常路由
-        else:
-            return {"intent": "mock_interview"}
-    return {"intent": route(text)}
+    agent = get_interviewer(state["session_id"])
+
+    # 1) 前端显式选择了模式：直接生效（选择非面试模式时顺带结束当前面试）
+    forced = state.get("force_intent") or "auto"
+    if forced != "auto":
+        if forced != "mock_interview":
+            agent.end_interview()
+        return {"intent": forced}
+
+    # 2) 没有挂起题目：正常按关键词路由
+    if agent.pending_question is None:
+        return {"intent": route(text)}
+
+    # 3) 面试进行中：默认本条消息是候选人回答
+    low = text.lower()
+    if any(kw in text for kw in INTERVIEW_EXIT_KEYWORDS):
+        agent.end_interview()
+        return {"intent": "general_chat"}  # "结束面试"本身含"面试"，不能还给关键词路由
+    if any(kw in text for kw in INTERVIEW_START_KEYWORDS):
+        agent.end_interview()  # 重新开一场：清掉旧题，换主题出题
+        return {"intent": "mock_interview"}
+    if any(kw in low for kw in STRONG_TASK_KEYWORDS):
+        agent.end_interview()  # 面试途中明确发起其他任务（如"分析这个 JD：…"）
+        return {"intent": route(text)}
+    return {"intent": "mock_interview"}
 
 
 def jd_analyst_node(state: AgentState) -> dict:
@@ -162,7 +186,7 @@ def resume_advisor_node(state: AgentState) -> dict:
 
 
 def interviewer_node(state: AgentState) -> dict:
-    agent = get_interviewer()
+    agent = get_interviewer(state["session_id"])
     writer = get_stream_writer()
     hits = agent.retrieve_reference(state["user_input"])
     # 面试官是状态机：无挂起问题则出题，有挂起问题则批改+追问（见 interviewer.py）

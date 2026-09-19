@@ -23,11 +23,12 @@ export async function streamChat(
   message: string,
   handlers: StreamHandlers,
   signal?: AbortSignal,
+  mode = 'auto',
 ): Promise<void> {
   const resp = await fetch(`${BASE}/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify({ session_id: sessionId, message, mode }),
     signal,
   })
   if (!resp.ok || !resp.body) {

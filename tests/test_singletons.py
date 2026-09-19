@@ -26,29 +26,34 @@ def test_vector_store_singleton_under_concurrency():
     """多线程同时首次获取，必须拿到同一个实例（且不抛异常）。"""
     from app.rag import vectorstore
 
-    # 重置单例，模拟冷启动时多个线程同时首次进入
+    # 重置单例，模拟冷启动时多个线程同时首次进入。
+    # 测完必须还原：否则后续测试（如 test_retriever_reuses_shared_clients）里
+    # get_vector_store() 会拿到新实例，与早前创建的 Retriever 内部持有的旧实例身份不符。
+    old = vectorstore._SINGLETON
     vectorstore._SINGLETON = None
+    try:
+        results: list[object] = []
+        errors: list[Exception] = []
+        barrier = threading.Barrier(8)
 
-    results: list[object] = []
-    errors: list[Exception] = []
-    barrier = threading.Barrier(8)
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=10)
+                results.append(vectorstore.get_vector_store())
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
 
-    def worker() -> None:
-        try:
-            barrier.wait(timeout=10)
-            results.append(vectorstore.get_vector_store())
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
 
-    threads = [threading.Thread(target=worker) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
-
-    assert not errors, f"并发获取单例报错：{errors}"
-    assert len(results) == 8
-    assert len({id(r) for r in results}) == 1, "并发下产生了多个实例"
+        assert not errors, f"并发获取单例报错：{errors}"
+        assert len(results) == 8
+        assert len({id(r) for r in results}) == 1, "并发下产生了多个实例"
+    finally:
+        vectorstore._SINGLETON = old
 
 
 def test_llm_client_is_singleton():

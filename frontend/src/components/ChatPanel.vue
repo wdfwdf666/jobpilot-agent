@@ -14,6 +14,15 @@ const status = ref('')
 const error = ref('')
 const listEl = ref<HTMLElement | null>(null)
 
+// 功能模式：auto 交给后端关键词路由；显式选择则跳过路由（确定性）
+const MODES = [
+  { value: 'auto', label: '自动' },
+  { value: 'jd_analysis', label: 'JD 分析' },
+  { value: 'resume_advice', label: '简历优化' },
+  { value: 'mock_interview', label: '模拟面试' },
+] as const
+const mode = ref<string>('auto')
+
 const sessionId = `web-${Math.random().toString(36).slice(2, 8)}`
 
 // 正在等待首个增量（阶段状态/首 token），此时显示状态行而不是空气泡
@@ -72,7 +81,7 @@ async function send(text?: string) {
       onError: (m) => {
         error.value = m
       },
-    })
+    }, undefined, mode.value)
     if (!assistant.content && !error.value) {
       assistant.content = '（空回复，请检查后端日志）'
     }
@@ -144,6 +153,18 @@ function rendered(content: string): string {
     </div>
 
     <div v-if="error" class="error">⚠ {{ error }}</div>
+
+    <div class="modes">
+      <button
+        v-for="m in MODES"
+        :key="m.value"
+        class="mode-chip"
+        :class="{ active: mode === m.value }"
+        :disabled="streaming"
+        @click="mode = m.value"
+      >{{ m.label }}</button>
+      <span v-if="mode === 'mock_interview'" class="mode-tip">面试中直接回答即可；说「结束面试」退出</span>
+    </div>
 
     <div class="composer">
       <textarea
@@ -315,6 +336,26 @@ function rendered(content: string): string {
   color: var(--danger);
   font-size: 13px;
 }
+
+.modes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px 0;
+}
+.mode-chip {
+  background: var(--bg);
+  color: var(--text-2);
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+.mode-chip.active {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+.mode-tip { font-size: 11px; color: var(--text-2); margin-left: 4px; }
 
 .composer {
   display: flex;

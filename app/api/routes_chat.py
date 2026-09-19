@@ -5,6 +5,7 @@
 -> 单向推送场景下 SSE 更轻：走 HTTP、自动重连、代理友好，无需额外协议升级。
 """
 import json
+from typing import Literal
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -18,10 +19,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # 简单的会话记忆（骨架阶段进程内存储；TODO: 换 Redis / SQLite）
 _sessions: dict[str, list[ChatMessage]] = {}
 
+Mode = Literal["auto", "jd_analysis", "resume_advice", "mock_interview", "general_chat"]
+
 
 class ChatRequest(BaseModel):
     session_id: str = "default"
     message: str
+    mode: Mode = "auto"  # auto=Planner 关键词路由；显式指定则跳过路由（前端模式选择器）
 
 
 def _sse(event: str, data: dict) -> str:
@@ -43,6 +47,8 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
             graph_input = {
                 "messages": history,
                 "user_input": req.message,
+                "session_id": req.session_id,
+                "force_intent": req.mode,
                 "intent": "",
                 "reply": "",
                 "artifacts": {},
