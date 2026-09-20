@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 120
 
+    # 检索模式：vector=纯向量（V1）；hybrid=BM25+向量 RRF 融合（V2，默认）
+    retrieval_mode: str = "hybrid"
+
     @field_validator("llm_enable_thinking", mode="before")
     @classmethod
     def _blank_to_none(cls, value: object) -> object:

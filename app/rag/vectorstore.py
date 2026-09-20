@@ -91,6 +91,18 @@ class VectorStore:
             })
         return hits
 
+    def get_all_chunks(self) -> list[dict[str, Any]]:
+        """取全库块（id/text/metadata），供 BM25 建索引等全量扫描场景。"""
+        result = self._collection.get(include=["documents", "metadatas"])
+        return [
+            {
+                "id": result["ids"][i],
+                "text": (result["documents"] or [])[i],
+                "metadata": (result["metadatas"] or [])[i],
+            }
+            for i in range(len(result["ids"]))
+        ]
+
     def count(self) -> int:
         return self._collection.count()
 

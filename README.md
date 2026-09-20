@@ -5,9 +5,10 @@
 
 前端 Vue 3 + TypeScript，后端 FastAPI + SSE 真流式输出。
 
-> 进度：**D1-4 已完成** —— 项目骨架 / 简历解析入库 / 检索与 LLM 打通 / 知识库可视化管理 /
-> JD 分析（结构化抽取 + 简历逐条匹配打分，带原文证据）/ 模拟面试（出题 → 批改 → 追问状态机）。
-> 下一步 D5+：LLM-as-judge 评测、BM25+向量混合检索。
+> 进度：**D1-11 已完成** —— 项目骨架 / 简历解析入库 / 检索与 LLM 打通 / 知识库可视化管理 /
+> JD 分析（结构化抽取 + 简历逐条匹配打分，带原文证据）/ 模拟面试（出题 → 批改 → 追问状态机）/
+> **混合检索（BM25 + 向量 + RRF）与评测体系**（检索 recall/MRR 对比 + LLM-as-judge 回答质量评分）。
+> 下一步 D12+：Docker 部署、demo 录屏；联网搜索（博查）已备好工具层，待接 Function Calling。
 
 ## 架构
 
@@ -95,12 +96,22 @@ npm run dev
 ## 测试与自检
 
 ```bash
-pytest -q                      # 单元测试（解析器 / 配置 / 单例）
+pytest -q                      # 单元测试（解析器 / 配置 / 单例 / 混合检索 / Prompt 回归）
 python scripts/check_rag.py        # RAG 链路：入库 -> 检索
 python scripts/check_stream.py     # SSE 真流式 + 引用来源（走 HTTP）
 python scripts/check_agent.py      # Agent 端到端：意图路由 + 检索注入 + 流式 + 来源
 python scripts/check_concurrent.py --mix   # 并发安全：混合端点压测
+python scripts/eval_retrieval.py   # 检索评测：纯向量 vs 混合，recall@k / MRR 对比
+python scripts/eval_answer.py      # LLM-as-judge：忠实度 / 相关性 1-5 打分
 ```
+
+**评测怎么读**：`eval_retrieval.py` 用 14 条真实查询（专有名词类 + 语义改写类 + 跨域混合类）
+对比两种检索模式。当前小语料（25 块）下两路 recall@3/@5 均 100%，混合检索的 MRR 略低
+——BM25 会把字面相似但语义偏离的片段顶前（评测抓到的真实案例：问"求职者会哪些编程语言"，
+提示词文档同样含"编程语言"字样被顶到第 1）。结论如实写进 README：**混合检索的收益预期在
+更大语料和更多专有名词场景，配置开关保留，评测脚本可持续回归**。
+`eval_answer.py` 则用裁判模型给回答打"忠实度/相关性"分——首轮评测即抓到一处真实幻觉
+（回答引入了检索依据中不存在的"平移不变性"），证明该机制能定位"RAG 没压住幻觉"的具体环节。
 
 ## 工程难点复盘
 
