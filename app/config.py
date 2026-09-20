@@ -36,7 +36,11 @@ class Settings(BaseSettings):
     # 百炼限制：text-embedding-v3/v4 单次请求最多 10 条文本，必须分批
     embed_batch_size: int = 10
 
-    # 联网搜索
+    # 联网搜索（P1）：默认博查 BochaAI（国内，注册送 2000 次，之后 ¥3.6/千次），
+    # 可切换回 Tavily 兜底。博查接口：POST /v1/web-search，Bearer 鉴权，返回 webPages.value[]。
+    search_provider: str = "bocha"  # bocha | tavily
+    bocha_api_key: str = ""
+    bocha_search_url: str = "https://api.bochaai.com/v1/web-search"
     tavily_api_key: str = ""
 
     # 存储
