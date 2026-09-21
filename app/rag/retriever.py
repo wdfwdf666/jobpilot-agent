@@ -13,7 +13,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.rag.embeddings import get_embedding_client
-from app.rag.hybrid import BM25Index, RECALL_PER_CHANNEL, rrf_fuse
+from app.rag.hybrid import BM25Index, rrf_fuse
 from app.rag.vectorstore import get_vector_store
 
 
@@ -33,7 +33,7 @@ class Retriever:
     ) -> list[dict[str, Any]]:
         """检索入口。mode 缺省取配置（RETRIEVAL_MODE，默认 hybrid）。
 
-        hybrid：两路各召回 RECALL_PER_CHANNEL 条 -> RRF 融合取 top_k。
+        hybrid：两路各召回 recall_per_channel 条 -> RRF 融合取 top_k。
         vector：纯向量（V1 行为，用于评测对比基线）。
         """
         mode = (mode or get_settings().retrieval_mode).lower()
@@ -41,12 +41,13 @@ class Retriever:
             query_embedding = self._embedder.embed([query])[0]
             return self._store.query(query_embedding, top_k=top_k, category=category)
 
+        recall_n = max(top_k, get_settings().recall_per_channel)
         vec_hits = self._store.query(
             self._embedder.embed([query])[0],
-            top_k=max(top_k, RECALL_PER_CHANNEL),
+            top_k=recall_n,
             category=category,
         )
-        bm25_hits = self._bm25.search(query, RECALL_PER_CHANNEL, category)
+        bm25_hits = self._bm25.search(query, recall_n, category)
         # 向量命中的 distance 保留；BM25 独有的命中没有 distance（前端不依赖它）
         return rrf_fuse(vec_hits, bm25_hits, top_k=top_k)
 

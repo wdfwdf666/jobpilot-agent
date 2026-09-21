@@ -37,17 +37,30 @@ class VectorStore:
         source: str = "manual",
         category: str = "通用",
         tags: list[str] | None = None,
+        per_chunk_tags: list[list[str]] | None = None,
     ) -> dict[str, int]:
-        """批量入库，返回 {added, skipped}。已存在（哈希相同）的块跳过。"""
+        """批量入库，返回 {added, skipped}。已存在（哈希相同）的块跳过。
+
+        tags：文档级标签，作用于所有块（如整篇的类别标记）。
+        per_chunk_tags：块级标签，长度需与 chunks 一致（简历按板块解析时用，
+        让每个块只带自己所属的板块名，块级过滤才有意义）。
+        踩坑：早期只支持文档级 tags，简历入库时传的是「全文档板块并集」，
+        导致每个块都被打上所有板块标签，块级标签形同虚设（检索诊断时发现）。
+        """
         tags = tags or []
+        if per_chunk_tags is not None and len(per_chunk_tags) != len(chunks):
+            raise ValueError(
+                f"per_chunk_tags 长度({len(per_chunk_tags)})与 chunks({len(chunks)})不一致"
+            )
         metadatas: list[dict[str, Any]] = []
         ids: list[str] = []
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             doc_id = make_doc_id(chunk, source)
             metadatas.append({
                 "source": source,
                 "category": category,
-                "tags": ",".join(tags),  # chroma metadata 不支持 list，用逗号串
+                # chroma metadata 不支持 list，用逗号串
+                "tags": ",".join(per_chunk_tags[i] if per_chunk_tags else tags),
                 "chunk_uuid": uuid.uuid4().hex[:8],
             })
             ids.append(doc_id)

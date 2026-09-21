@@ -20,8 +20,8 @@ from rank_bm25 import BM25Okapi
 
 from app.rag.vectorstore import VectorStore
 
-RRF_K = 60
-# 每路召回数量：要大于最终 top_k，给融合留出合并空间
+RRF_K = 60  # 缺省值，实际取 Settings.rrf_k（可用 .env / 环境变量覆盖做网格搜索）
+# 每路召回数量：要大于最终 top_k，给融合留出合并空间（实际取 Settings.recall_per_channel）
 RECALL_PER_CHANNEL = 20
 
 
@@ -83,14 +83,22 @@ class BM25Index:
             self._built_count = count
 
 
-def rrf_fuse(*ranked_lists: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
-    """RRF 融合多路召回结果，按 id 去重合并，metadata/text 取首个非空版本。"""
+def rrf_fuse(
+    *ranked_lists: list[dict[str, Any]], top_k: int, k: int | None = None
+) -> list[dict[str, Any]]:
+    """RRF 融合多路召回结果，按 id 去重合并，metadata/text 取首个非空版本。
+
+    k 缺省取配置（RRF_K=60）。融合只依赖名次，所以两路的分数量纲不一致也没关系。
+    """
+    from app.config import get_settings
+
+    k = k or get_settings().rrf_k
     scores: dict[str, float] = {}
     hits: dict[str, dict[str, Any]] = {}
     for ranked in ranked_lists:
         for rank, hit in enumerate(ranked):
             hid = hit["id"]
-            scores[hid] = scores.get(hid, 0.0) + 1.0 / (RRF_K + rank + 1)
+            scores[hid] = scores.get(hid, 0.0) + 1.0 / (k + rank + 1)
             if hid not in hits:
                 hits[hid] = hit
     fused_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:top_k]

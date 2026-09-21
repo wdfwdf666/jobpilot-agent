@@ -54,6 +54,11 @@ class Settings(BaseSettings):
 
     # 检索模式：vector=纯向量（V1）；hybrid=BM25+向量 RRF 融合（V2，默认）
     retrieval_mode: str = "hybrid"
+    # 混合检索可调参数（用 scripts/eval_retrieval.py 做网格搜索，别拍脑袋调）。
+    # rrf_k 越小越"奖励头部名次"，越大越平权；recall_per_channel 决定融合前的候选池，
+    # 太小可能让某一路的正确答案没进池子，太大会引入噪声又拖慢融合。
+    rrf_k: int = 60
+    recall_per_channel: int = 20
 
     @field_validator("llm_enable_thinking", mode="before")
     @classmethod

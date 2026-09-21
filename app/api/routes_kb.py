@@ -73,8 +73,22 @@ def _ingest_file(filename: str, data: bytes, category: str) -> dict:
         embeddings = get_embedding_client().embed([b["text"] for b in blocks])
         result = get_vector_store().add_chunks(
             [b["text"] for b in blocks], embeddings, source=safe_name,
-            category=category, tags=sorted({b["section"] for b in blocks}),
+            category=category,
+            # 文档级 tags = 全文档板块并集（给文档列表展示用）
+            tags=sorted({b["section"] for b in blocks}),
+            # 块级 tags = 该块自己的板块（检索诊断发现：只传文档级会让每个块
+            # 都带上所有板块标签，"按板块过滤"就失效了）
+            per_chunk_tags=[[b["section"]] for b in blocks],
         )
+        # 板块置信度：PDF 抽取常丢标题层级，若单个板块吞掉 >70% 正文，
+        # 说明标题没识别准（真实踩坑：整份简历被归到"专业技能"），显式告知用户
+        total_chars = sum(len(s.content) for s in profile.sections) or 1
+        dominant = max(profile.sections, key=lambda s: len(s.content))
+        if not profile.structured or len(dominant.content) / total_chars > 0.7:
+            result["warning"] = (
+                f"板块识别置信度低：{len(dominant.content) / total_chars:.0%} 的正文被归入"
+                f"「{dominant.name}」。建议上传 md/docx 版本，PDF 抽取会打乱板块边界。"
+            )
         result["sections"] = [s.name for s in profile.sections]
         result["structured"] = profile.structured
         return result

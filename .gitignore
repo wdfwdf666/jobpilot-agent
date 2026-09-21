@@ -30,6 +30,7 @@ eval_results/
 _*.txt
 _*.log
 _*.json
+_*/
 
 # Node / 前端
 node_modules/

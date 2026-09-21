@@ -47,6 +47,13 @@ def main() -> None:
 
     blocks = profile.to_blocks()
     print(f"[2/4] 分块完成：{len(blocks)} 块（板块内分块，块文本带【板块】前缀）")
+    # 板块置信度告警：PDF 抽取常丢标题层级，整份正文挤进一个板块时
+    # 板块标签就失去意义了（真实踩坑：整份简历被归到「专业技能」）
+    total_chars = sum(len(s.content) for s in profile.sections) or 1
+    dominant = max(profile.sections, key=lambda s: len(s.content))
+    if not profile.structured or len(dominant.content) / total_chars > 0.7:
+        print(f"      ⚠ 板块识别置信度低：{len(dominant.content) / total_chars:.0%} 的正文被归入"
+              f"「{dominant.name}」，建议改用 md/docx 版本")
     if args.dry_run:
         print("dry-run 结束，未入库。")
         return
@@ -63,7 +70,8 @@ def main() -> None:
         embeddings,
         source=source,
         category=CATEGORY,
-        tags=sorted({b["section"] for b in blocks}),
+        tags=sorted({b["section"] for b in blocks}),          # 文档级：板块并集
+        per_chunk_tags=[[b["section"]] for b in blocks],      # 块级：只带自己的板块
     )
     print(f"[4/4] 入库完成：新增 {result['added']} 块，去重跳过 {result['skipped']} 块")
 
