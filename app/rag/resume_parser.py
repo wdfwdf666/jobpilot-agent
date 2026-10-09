@@ -127,6 +127,12 @@ def _extract_name(lines: list[str]) -> str:
             token = _name_token(ln)
             if token:
                 return token[:20]
+    # 信息行形态："姓 名：王东风"（PDF/文本框简历最常见，冒号内有空格填充）。
+    # 只取 2-4 个连续汉字：该行常与"性 别：男"等其他字段合并在同一视觉行
+    for ln in lines[:15]:
+        m = re.match(r"^\s*姓\s*名\s*[:：]\s*([\u4e00-\u9fa5]{2,4})(?:\s|$)", ln.strip())
+        if m:
+            return m.group(1).strip()
     for ln in lines[:8]:
         s = ln.strip()
         if not s or _match_heading(s):
@@ -137,7 +143,8 @@ def _extract_name(lines: list[str]) -> str:
         if re.search(r"[:：]", s) or re.search(r"\d{3,}", s):
             continue
         token = _name_token(s)
-        if 2 <= len(token) <= 20:
+        # "个人简历"/"个人履历"这类文档标题行也满足短且无冒号，须排除
+        if 2 <= len(token) <= 20 and not re.search(r"简历|履历|resume", token, re.I):
             return token
     return ""
 
