@@ -15,6 +15,8 @@ data/uploads/*
 data/chroma/*
 !data/uploads/.gitkeep
 !data/chroma/.gitkeep
+# LangGraph 检查点库：含会话挂起状态（可能带用户输入原文），与上传文件同级敏感
+data/checkpoints.sqlite*
 
 # IDE / OS
 .idea/

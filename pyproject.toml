@@ -15,6 +15,10 @@ dependencies = [
     "openai>=1.40",
     "langgraph>=0.2",
     "langchain-core>=0.3",
+    # 图状态持久化（checkpointer）：interrupt / resume 的前提，SQLite 单文件落盘。
+    # 注意包名与导入路径不一致：pip 装 langgraph-checkpoint-sqlite，
+    # 代码里从 langgraph.checkpoint.sqlite 导入 SqliteSaver（真实踩坑点）。
+    "langgraph-checkpoint-sqlite>=2.0",
     # RAG
     "chromadb>=0.5",
     "pypdf>=4.0",

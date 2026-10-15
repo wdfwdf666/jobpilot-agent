@@ -7,10 +7,13 @@
  */
 import type {
   ChatMessage,
+  ChatState,
   IngestResult,
+  InterviewReport,
   KbChunk,
   KbDocument,
   KbHit,
+  ReviewDecision,
   StreamHandlers,
   UploadBatchResult,
 } from './types'
@@ -23,17 +26,20 @@ const BASE: string = import.meta.env.VITE_API_BASE ?? '/api'
 
 // ---------- 聊天 ----------
 
-export async function streamChat(
-  sessionId: string,
-  message: string,
+/**
+ * POST + SSE 的通用实现：/chat/stream 与 /chat/resume 只有请求体不同，
+ * 帧解析与事件分发完全相同，抽出来避免两份实现漂移。
+ */
+async function postSse(
+  url: string,
+  body: unknown,
   handlers: StreamHandlers,
   signal?: AbortSignal,
-  mode = 'auto',
 ): Promise<void> {
-  const resp = await fetch(`${BASE}/chat/stream`, {
+  const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, message, mode }),
+    body: JSON.stringify(body),
     signal,
   })
   if (!resp.ok || !resp.body) {
@@ -60,6 +66,39 @@ export async function streamChat(
   }
 }
 
+export async function streamChat(
+  sessionId: string,
+  message: string,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+  mode = 'auto',
+): Promise<void> {
+  return postSse(
+    `${BASE}/chat/stream`,
+    { session_id: sessionId, message, mode },
+    handlers,
+    signal,
+  )
+}
+
+/**
+ * 恢复被人工审核挂起的一轮：后端用 Command(resume=decision) 驱动同一条线程，
+ * 前端把返回的增量续写到同一条气泡里，所以体验上是"图暂停了一下又继续"。
+ */
+export async function resumeChat(
+  sessionId: string,
+  decision: ReviewDecision,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  return postSse(
+    `${BASE}/chat/resume`,
+    { session_id: sessionId, decision },
+    handlers,
+    signal,
+  )
+}
+
 function dispatchFrame(frame: string, handlers: StreamHandlers): void {
   let event = 'message'
   let data = ''
@@ -84,6 +123,10 @@ function dispatchFrame(frame: string, handlers: StreamHandlers): void {
     case 'artifacts':
       handlers.onArtifacts?.(payload as Record<string, unknown>)
       break
+    case 'interrupt':
+      // 图在人工审核处挂起：本轮 SSE 到此为止（后端不会发 done）
+      handlers.onInterrupt?.(payload as never)
+      break
     case 'done':
       handlers.onDone?.(payload as { intent: string })
       break
@@ -94,10 +137,31 @@ function dispatchFrame(frame: string, handlers: StreamHandlers): void {
 }
 
 export async function fetchHistory(sessionId: string): Promise<ChatMessage[]> {
-  const resp = await fetch(`${BASE}/chat/history/${sessionId}`)
+  const resp = await fetch(`${BASE}/chat/history/${encodeURIComponent(sessionId)}`)
   if (!resp.ok) return []
   const data = (await resp.json()) as { messages: ChatMessage[] }
   return data.messages
+}
+
+/** 拉取本场面试的评分报告（markdown + 可跳转的知识库回链） */
+export async function fetchInterviewReport(sessionId: string): Promise<InterviewReport> {
+  const resp = await fetch(`${BASE}/interview/report/${encodeURIComponent(sessionId)}`)
+  if (!resp.ok) throw new Error(`获取面试报告失败：HTTP ${resp.status}`)
+  return (await resp.json()) as InterviewReport
+}
+
+/**
+ * 读检查点里的图状态：刷新页面后用它恢复"上次的匹配度面板"与"待人工确认的卡片"。
+ * 检查点让图状态跨请求、跨进程存活，前端因此不必自己缓存这些结构化产物。
+ */
+export async function fetchChatState(sessionId: string): Promise<ChatState> {
+  const resp = await fetch(`${BASE}/chat/state/${encodeURIComponent(sessionId)}`)
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  return (await resp.json()) as ChatState
+}
+
+export async function endInterview(sessionId: string): Promise<void> {
+  await fetch(`${BASE}/chat/interview/end/${encodeURIComponent(sessionId)}`, { method: 'POST' })
 }
 
 // ---------- 知识库 ----------

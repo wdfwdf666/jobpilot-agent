@@ -7,17 +7,24 @@ const kbRefreshKey = ref(0)
 function onKbChanged() {
   kbRefreshKey.value++
 }
+
+// 面试报告里的"待补强"chips -> 知识库检索面板。
+// 组件间不直接互相调用，靠 App 这一层传话，保证两侧都能独立单测/复用。
+const kbPanel = ref<InstanceType<typeof KBPanel> | null>(null)
+function onKbSearch(query: string) {
+  kbPanel.value?.runSearch(query)
+}
 </script>
 
 <template>
   <div class="layout">
     <header class="topbar">
       <div class="brand">JobPilot<span class="sub">智能求职助手 Agent</span></div>
-      <div class="meta">Vue 3 + FastAPI · SSE 流式</div>
+      <div class="meta">Vue 3 + FastAPI · SSE 流式 · LangGraph 人审</div>
     </header>
     <main class="content">
-      <KBPanel :refresh-key="kbRefreshKey" @changed="onKbChanged" />
-      <ChatPanel @kb-changed="onKbChanged" />
+      <KBPanel ref="kbPanel" :refresh-key="kbRefreshKey" @changed="onKbChanged" />
+      <ChatPanel @kb-changed="onKbChanged" @kb-search="onKbSearch" />
     </main>
   </div>
 </template>

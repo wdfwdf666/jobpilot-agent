@@ -1,10 +1,29 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { fetchHistory, streamChat } from '../api'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import {
+  endInterview,
+  fetchChatState,
+  fetchHistory,
+  fetchInterviewReport,
+  resumeChat,
+  streamChat,
+} from '../api'
 import { renderMarkdown } from '../markdown'
-import type { ChatMessage, SourceRef } from '../types'
+import type {
+  ChatMessage,
+  InterviewReport,
+  ReviewDecision,
+  SourceRef,
+  SseArtifacts,
+  StreamHandlers,
+} from '../types'
+import MatchPanel from './MatchPanel.vue'
+import ReviewCard from './ReviewCard.vue'
 
-const emit = defineEmits<{ (e: 'kb-changed'): void }>()
+const emit = defineEmits<{
+  (e: 'kb-changed'): void
+  (e: 'kb-search', query: string): void
+}>()
 
 const messages = ref<ChatMessage[]>([])
 const input = ref('')
@@ -12,6 +31,7 @@ const streaming = ref(false)
 const intent = ref('')
 const status = ref('')
 const error = ref('')
+
 const listEl = ref<HTMLElement | null>(null)
 
 // 功能模式：auto 交给后端关键词路由；显式选择则跳过路由（确定性）
@@ -23,7 +43,19 @@ const MODES = [
 ] as const
 const mode = ref<string>('auto')
 
-const sessionId = `web-${Math.random().toString(36).slice(2, 8)}`
+// 会话 id 落 localStorage：图状态与对话历史都在后端的检查点里按 thread_id 存着，
+// 只要 id 不变，刷新页面甚至重启后端都能接着聊（此前是内存 dict，刷新即丢）。
+const SESSION_KEY = 'jobpilot.session_id'
+const sessionId = ref(localStorage.getItem(SESSION_KEY) || newSessionId())
+watch(sessionId, (v) => localStorage.setItem(SESSION_KEY, v))
+function newSessionId(): string {
+  return `web-${Math.random().toString(36).slice(2, 8)}`
+}
+
+const hadInterview = ref(false)
+const report = ref<InterviewReport | null>(null)
+const reportOpen = ref(false)
+const reportBusy = ref(false)
 
 // 正在等待首个增量（阶段状态/首 token），此时显示状态行而不是空气泡
 const waitingFirstToken = computed(() => {
@@ -37,28 +69,54 @@ const SUGGESTIONS = [
   '我想模拟一场 Python 后端的技术面试',
 ]
 
-onMounted(async () => {
-  messages.value = await fetchHistory(sessionId)
-  scrollToBottom()
-})
+onMounted(restore)
 
-async function send(text?: string) {
-  const content = (text ?? input.value).trim()
-  if (!content || streaming.value) return
-  input.value = ''
+/** 刷新后从检查点恢复：历史消息 + 上次的结构化产物 + 待人工确认的卡片。 */
+async function restore() {
+  const sid = sessionId.value
+  messages.value = (await fetchHistory(sid)) as ChatMessage[]
+  try {
+    const state = await fetchChatState(sid)
+    const last = messages.value[messages.value.length - 1]
+    if (state.artifacts && Object.keys(state.artifacts).length) {
+      if (last && last.role === 'assistant') {
+        applyArtifacts(last, state.artifacts)
+      } else {
+        // 中断发生在生成回复之前：补一条空气泡承载审核卡片
+        const bubble = reactive<ChatMessage>({ role: 'assistant', content: '' })
+        applyArtifacts(bubble, state.artifacts)
+        messages.value.push(bubble)
+      }
+    }
+    if (state.interrupt) {
+      const target = [...messages.value].reverse().find((m) => m.role === 'assistant')
+      if (target) target.review = state.interrupt
+    }
+  } catch {
+    /* 状态接口不可用时静默降级：历史仍可显示 */
+  }
+  scrollToBottom()
+}
+
+function applyArtifacts(target: ChatMessage, a: SseArtifacts) {
+  if (Array.isArray(a.sources)) target.sources = a.sources as SourceRef[]
+  // 结构化产物优先于正文渲染：后端已经把 match_result 推过来了，
+  // 之前只消费 sources，等于白干了一半（匹配度让模型写进 markdown 里，看不清也点不动）
+  if (a.match_result) target.matchResult = a.match_result
+  if (a.jd_analysis) target.jdAnalysis = a.jd_analysis
+  if (typeof a.edited_by_human === 'boolean') target.editedByHuman = a.edited_by_human
+}
+
+/** 统一的流式驱动：/chat/stream 与 /chat/resume 共用，续写同一条气泡。 */
+async function pump(
+  start: (handlers: StreamHandlers) => Promise<void>,
+  assistant: ChatMessage,
+) {
+  streaming.value = true
   error.value = ''
   status.value = ''
-  streaming.value = true
-  messages.value.push({ role: 'user', content })
-
-  // 必须是 reactive 对象：流式期间逐字改 content 才能触发视图更新
-  // （普通对象 push 进数组后，直接改它不会触发响应式——这是真实的踩坑点）
-  const assistant = reactive<ChatMessage>({ role: 'assistant', content: '' })
-  messages.value.push(assistant)
-  scrollToBottom()
-
   try {
-    await streamChat(sessionId, content, {
+    await start({
       onDelta: (t) => {
         status.value = ''
         assistant.content += t
@@ -68,21 +126,20 @@ async function send(text?: string) {
         status.value = s
         scrollToBottom()
       },
+      onArtifacts: (a) => applyArtifacts(assistant, a),
+      // 图在人工审核处挂起：本轮到此结束，等用户在卡片上做决定
+      onInterrupt: (r) => {
+        assistant.review = r
+      },
       onDone: (d) => {
         intent.value = d.intent
-        // 面试官等 Agent 会读知识库，入库状态可能变化，这里暂不联动，留给知识库面板
-      },
-      onArtifacts: (a) => {
-        // 检索命中的原文片段：让回答可追溯（面试演示的关键卖点）
-        if (Array.isArray(a.sources)) {
-          assistant.sources = a.sources as SourceRef[]
-        }
+        if (d.intent === 'mock_interview') hadInterview.value = true
       },
       onError: (m) => {
         error.value = m
       },
-    }, undefined, mode.value)
-    if (!assistant.content && !error.value) {
+    })
+    if (!assistant.content && !assistant.review && !error.value) {
       assistant.content = '（空回复，请检查后端日志）'
     }
   } catch (e) {
@@ -92,6 +149,75 @@ async function send(text?: string) {
     status.value = ''
     scrollToBottom()
   }
+}
+
+async function send(text?: string) {
+  const content = (text ?? input.value).trim()
+  if (!content || streaming.value) return
+  input.value = ''
+  messages.value.push({ role: 'user', content })
+
+  // 必须是 reactive 对象：流式期间逐字改 content 才能触发视图更新
+  // （普通对象 push 进数组后，直接改它不会触发响应式——这是真实的踩坑点）
+  const assistant = reactive<ChatMessage>({ role: 'assistant', content: '' })
+  messages.value.push(assistant)
+  scrollToBottom()
+
+  await pump(
+    (h) => streamChat(sessionId.value, content, h, undefined, mode.value),
+    assistant,
+  )
+}
+
+/** 提交人工审核决定：用同一个 thread 续跑，结果续写到同一条气泡。 */
+async function submitReview(assistant: ChatMessage, decision: ReviewDecision) {
+  if (streaming.value) return
+  assistant.reviewDecision = decision
+  await pump((h) => resumeChat(sessionId.value, decision, h), assistant)
+}
+
+async function switchSession() {
+  if (streaming.value) return
+  sessionId.value = newSessionId()
+  messages.value = []
+  intent.value = ''
+  error.value = ''
+  report.value = null
+  reportOpen.value = false
+  hadInterview.value = false
+}
+
+async function openReport() {
+  if (reportBusy.value) return
+  reportBusy.value = true
+  error.value = ''
+  try {
+    report.value = await fetchInterviewReport(sessionId.value)
+    reportOpen.value = true
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    reportBusy.value = false
+  }
+}
+
+async function finishInterview() {
+  if (streaming.value) return
+  await endInterview(sessionId.value)
+  await openReport()
+}
+
+/** 报告既在页面里预览，也支持落成文件带走（简历演示时更实用）。 */
+function downloadReport() {
+  if (!report.value) return
+  const stamp = report.value.generated_at.replace(/[: ]/g, '-')
+  const blob = new Blob([report.value.markdown], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `模拟面试评分报告-${stamp}.md`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function scrollToBottom() {
@@ -133,13 +259,30 @@ function rendered(content: string): string {
           <div v-if="m.role === 'assistant'" class="bubble md" v-html="rendered(m.content)" />
           <div v-else class="bubble"><pre>{{ m.content }}</pre></div>
 
+          <!-- 结构化产物优先展示：这才是 JD 分析的真正交付物 -->
+          <MatchPanel
+            v-if="m.matchResult"
+            :jd-analysis="m.jdAnalysis"
+            :match-result="m.matchResult"
+            :edited-by-human="m.editedByHuman"
+          />
+
+          <ReviewCard
+            v-if="m.review"
+            :request="m.review"
+            :decision="m.reviewDecision"
+            :busy="streaming"
+            @submit="(d) => submitReview(m, d)"
+          />
+
           <details v-if="m.sources && m.sources.length" class="sources">
-            <summary>引用来源（{{ m.sources.length }} 段原文）</summary>
+            <summary>引用来源（{{ m.sources.length }} 条）</summary>
             <div v-for="(s, j) in m.sources" :key="j" class="source-item">
               <div class="source-meta">
                 <span class="cat">{{ s.category }}</span>
                 <span>{{ s.source }}</span>
-                <span class="dist">距离 {{ s.distance.toFixed(3) }}</span>
+                <!-- 联网来源没有向量距离，distance 为 0 时不显示这一项 -->
+                <span v-if="s.distance > 0" class="dist">距离 {{ s.distance.toFixed(3) }}</span>
               </div>
               <p>{{ s.text }}</p>
             </div>
@@ -154,6 +297,35 @@ function rendered(content: string): string {
 
     <div v-if="error" class="error">⚠ {{ error }}</div>
 
+    <!-- 面试评分报告：结束后聚合成 md，薄弱点可直接跳到知识库检索 -->
+    <section v-if="reportOpen && report" class="report">
+      <header class="report-head">
+        <div>
+          <strong>模拟面试评分报告</strong>
+          <span class="report-meta">
+            {{ report.turns }} 题 · 平均 {{ report.average_score }}/100 · {{ report.generated_at }}
+          </span>
+        </div>
+        <div class="report-actions">
+          <button class="ghost sm" @click="downloadReport">下载 .md</button>
+          <button class="ghost sm" @click="reportOpen = false">收起</button>
+        </div>
+      </header>
+
+      <div v-if="report.knowledge_gaps.length" class="gaps">
+        <span class="gaps-label">待补强（点击跳到知识库检索）：</span>
+        <button
+          v-for="(g, i) in report.knowledge_gaps"
+          :key="i"
+          class="gap-chip"
+          :title="g.missing_points.join('；')"
+          @click="emit('kb-search', g.query)"
+        >{{ g.label || g.question }}</button>
+      </div>
+
+      <div class="report-body md" v-html="rendered(report.markdown)" />
+    </section>
+
     <div class="modes">
       <button
         v-for="m in MODES"
@@ -164,6 +336,14 @@ function rendered(content: string): string {
         @click="mode = m.value"
       >{{ m.label }}</button>
       <span v-if="mode === 'mock_interview'" class="mode-tip">面试中直接回答即可；说「结束面试」退出</span>
+      <span class="spacer" />
+      <button class="ghost sm" :disabled="streaming" @click="switchSession">新会话</button>
+      <button v-if="mode === 'mock_interview'" class="ghost sm" :disabled="streaming" @click="finishInterview">
+        结束并出报告
+      </button>
+      <button v-else-if="hadInterview" class="ghost sm" :disabled="reportBusy" @click="openReport">
+        导出面试报告
+      </button>
     </div>
 
     <div class="composer">
@@ -226,6 +406,8 @@ function rendered(content: string): string {
   background: var(--primary);
   color: #fff;
 }
+/* 匹配度面板比气泡更宽：它承载表格化的结构化结果，挤在 78% 里读不动 */
+.bubble-wrap:has(> .match-panel) { max-width: 100%; }
 
 /* 引用来源：可折叠，回答可追溯到原文片段 */
 .sources {
@@ -289,14 +471,16 @@ function rendered(content: string): string {
   color: var(--text-2);
 }
 .bubble.md :deep(blockquote p) { margin: 2px 0; }
-.bubble.md :deep(code) {
+.bubble.md :deep(code),
+.report-body.md :deep(code) {
   font-family: Consolas, 'JetBrains Mono', monospace;
   font-size: 0.92em;
   background: rgba(31, 35, 41, 0.08);
   padding: 1px 5px;
   border-radius: 4px;
 }
-.bubble.md :deep(pre) {
+.bubble.md :deep(pre),
+.report-body.md :deep(pre) {
   margin: 8px 0;
   padding: 12px 14px;
   background: #f6f8fa;
@@ -311,21 +495,27 @@ function rendered(content: string): string {
   line-height: 1.55;
   white-space: pre;
 }
-.bubble.md :deep(table) {
+.bubble.md :deep(table),
+.report-body.md :deep(table) {
   border-collapse: collapse;
   margin: 8px 0;
   font-size: 13px;
   width: 100%;
 }
 .bubble.md :deep(th),
-.bubble.md :deep(td) {
+.bubble.md :deep(td),
+.report-body.md :deep(th),
+.report-body.md :deep(td) {
   border: 1px solid var(--border);
   padding: 5px 10px;
   text-align: left;
 }
-.bubble.md :deep(th) { background: var(--bg); font-weight: 600; }
-.bubble.md :deep(a) { color: var(--primary); }
-.bubble.md :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.bubble.md :deep(th),
+.report-body.md :deep(th) { background: var(--bg); font-weight: 600; }
+.bubble.md :deep(a),
+.report-body.md :deep(a) { color: var(--primary); }
+.bubble.md :deep(hr),
+.report-body.md :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 .typing { color: var(--text-2); font-size: 13px; }
 
 .error {
@@ -337,12 +527,57 @@ function rendered(content: string): string {
   font-size: 13px;
 }
 
+/* 面试报告面板 */
+.report {
+  margin: 0 20px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 10px 12px;
+}
+.report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.report-meta { margin-left: 8px; font-size: 12px; color: var(--text-2); }
+.report-actions { display: flex; gap: 6px; }
+.gaps { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.gaps-label { font-size: 12px; color: var(--text-2); }
+.gap-chip {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--primary-weak);
+  color: var(--primary);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.report-body {
+  max-height: 40vh;
+  overflow-y: auto;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.report-body.md :deep(h1) { font-size: 16px; margin: 4px 0 8px; }
+.report-body.md :deep(h2) { font-size: 14px; margin: 10px 0 6px; }
+.report-body.md :deep(h3) { font-size: 13px; margin: 8px 0 4px; }
+.report-body.md :deep(p),
+.report-body.md :deep(ul) { margin: 4px 0; }
+.report-body.md :deep(ul) { padding-left: 20px; }
+
 .modes {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 20px 0;
+  flex-wrap: wrap;
 }
+.modes .spacer { flex: 1; }
 .mode-chip {
   background: var(--bg);
   color: var(--text-2);
@@ -356,6 +591,7 @@ function rendered(content: string): string {
   font-weight: 600;
 }
 .mode-tip { font-size: 11px; color: var(--text-2); margin-left: 4px; }
+.sm { padding: 4px 10px; font-size: 12px; }
 
 .composer {
   display: flex;

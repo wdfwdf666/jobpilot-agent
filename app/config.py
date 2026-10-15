@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     uploads_dir: str = "data/uploads"
     collection_name: str = "jobpilot"
 
+    # LangGraph 检查点（图状态持久化）：人机协同（interrupt / resume）的前提条件。
+    # 没有它，interrupt 抛出的中断无处保存，图无法从断点续跑——
+    # 所以"人工审核"不是加一个 interrupt 调用就行的，它是 checkpointer + thread_id +
+    # Command(resume=...) 三件套。同一个 session_id 映射同一个 thread_id，
+    # 于是挂起的审核可以在另一次请求（甚至另一个进程）里恢复。
+    checkpoint_db: str = "data/checkpoints.sqlite"
+    # JD 分析后是否挂人工审核：开启后图会在 jd_review 节点停下，等前端确认或修正
+    # 抽取出的岗位要求，再继续生成匹配结论。关掉即退化为全自动（老行为）。
+    human_review_jd: bool = True
+
     # 分块参数（面试考点：块太大检索不精、太小上下文断裂）
     chunk_size: int = 500
     chunk_overlap: int = 120
@@ -80,6 +90,10 @@ class Settings(BaseSettings):
     @property
     def uploads_path(self) -> Path:
         return BASE_DIR / self.uploads_dir
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return BASE_DIR / self.checkpoint_db
 
     @property
     def cors_origin_list(self) -> list[str]:

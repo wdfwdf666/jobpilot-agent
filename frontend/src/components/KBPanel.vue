@@ -90,6 +90,15 @@ async function doSearch() {
   }
 }
 
+/** 供外部（面试报告里的"待补强"chips）驱动：切到检索页并直接搜。 */
+async function runSearch(q: string) {
+  tab.value = 'search'
+  query.value = q
+  await doSearch()
+}
+
+defineExpose({ runSearch })
+
 function show(msg: string, type: 'ok' | 'err') {
   notice.value = msg
   noticeType.value = type
