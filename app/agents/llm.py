@@ -74,3 +74,25 @@ def chat_stream(messages: list[dict[str, str]], json_mode: bool = False) -> Iter
         delta = event.choices[0].delta.content
         if delta:
             yield delta
+
+
+def chat_with_tools(
+    messages: list[dict[str, Any]],
+    tools: list[dict],
+    temperature: float = 0.3,
+) -> Any:
+    """带工具的一次调用（非流式），返回 message 对象（可能带 tool_calls）。
+
+    为什么工具决策轮不走流式：OpenAI 兼容接口的流式 tool_calls 是按 index 分片下发的，
+    需要自行按 index 拼装 name 与 arguments 再合并，坑多且出错时很难定位。
+    这里用一轮非流式换实现可靠性，代价只是首个 token 晚 1~2 秒。
+    """
+    settings = get_settings()
+    kwargs = _build_kwargs(messages, json_mode=False)
+    resp = get_llm().chat.completions.create(
+        model=settings.llm_model,
+        temperature=temperature,
+        tools=tools,
+        **kwargs,
+    )
+    return resp.choices[0].message
