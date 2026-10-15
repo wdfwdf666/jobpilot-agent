@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes_chat import router as chat_router
+from app.api.routes_interview import router as interview_router
 from app.api.routes_kb import router as kb_router
 from app.config import get_settings
 from app.warmup import warmup
@@ -42,6 +43,7 @@ app.add_middleware(
 
 app.include_router(chat_router)
 app.include_router(kb_router)
+app.include_router(interview_router)
 
 
 @app.get("/health")
