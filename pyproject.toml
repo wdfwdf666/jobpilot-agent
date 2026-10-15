@@ -7,6 +7,10 @@ dependencies = [
     # Web 框架
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # FastAPI 处理 UploadFile / Form 时的运行时依赖：代码里没人 import 它，
+    # 本地环境恰好装了所以一直没暴露，直到干净环境安装才 import 期报错——
+    # 属于"扫 import 也发现不了"的隐式依赖，必须显式声明。
+    "python-multipart>=0.0.9",
     # LLM / Agent
     "openai>=1.40",
     "langgraph>=0.2",
