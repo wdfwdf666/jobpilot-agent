@@ -1,0 +1,44 @@
+# JobPilot 部署编排（nginx 形态）。
+#
+#   docker compose up -d --build     构建并启动
+#   docker compose logs -f api       看后端日志（warmup 报告在这里）
+#   docker compose down              停止（数据卷保留）
+#   docker compose down -v           停止并删数据卷（清空向量库）
+#
+# 对外只开 web 的端口：api 不写 ports，只在容器网络内可达，
+# 也就是后端不直接暴露到宿主机——要调接口就走 nginx 的 /api 前缀。
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: jobpilot-api
+    # 密钥只在运行时注入，不进镜像（.dockerignore 已排除 .env）
+    env_file: .env
+    volumes:
+      # 向量库 + 上传文件持久化。不挂卷的话容器一重建就得重新入库。
+      - jobpilot_data:/app/data
+    # 刻意不写 ports：仅允许 web 通过内部网络访问 8000。
+    # 想看后端原生响应时可临时加：- "8000:8000"
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: jobpilot-web
+    ports:
+      # 宿主机 8080 → nginx 80。刻意避开本地开发的 5173（vite）与 8000（uvicorn）。
+      # 想换端口：改 .env 里的 APP_PORT，或 APP_PORT=80 docker compose up
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      api:
+        # 等后端 /health 通过再起 nginx，否则首屏会先吃几个 502
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  jobpilot_data:

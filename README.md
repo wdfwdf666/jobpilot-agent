@@ -8,7 +8,9 @@
 > 进度：**D1-11 已完成** —— 项目骨架 / 简历解析入库 / 检索与 LLM 打通 / 知识库可视化管理 /
 > JD 分析（结构化抽取 + 简历逐条匹配打分，带原文证据）/ 模拟面试（出题 → 批改 → 追问状态机）/
 > **混合检索（BM25 + 向量 + RRF）与评测体系**（检索 recall/MRR 对比 + LLM-as-judge 回答质量评分）。
-> 下一步 D12+：Docker 部署、demo 录屏；联网搜索（博查）已备好工具层，待接 Function Calling。
+> **D12 已完成**：Docker 部署双形态 —— nginx 双容器（compose 编排 + 反向代理 + SSE 直通）
+> 与单容器（多阶段构建 + 健康检查 + 非 root 数据卷）。
+> 下一步 D13-14：demo 录屏；联网搜索（博查）已备好工具层，待接 Function Calling。
 
 ## 架构
 
@@ -67,6 +69,87 @@ npm run dev
 
 浏览器打开 http://localhost:5173 ，左侧是知识库面板（粘贴入库 / 上传文件 / 文档管理 / 检索测试），右侧是对话区。
 
+## Docker 部署
+
+提供两种形态，二选一。
+
+### 形态 A：nginx + 后端双容器（推荐，生产形态）
+
+```bash
+docker compose up -d --build
+# 打开 http://localhost:8080  —— nginx 托管前端，并把 /api 反向代理到后端
+docker compose logs -f api     # 后端 warmup 报告在这里
+docker compose down            # 停止（数据卷保留）
+```
+
+- `web`：`nginx:alpine`，托管 `dist` 静态资源 + 反代 `/api` → `api:8000`
+- `api`：FastAPI，**不写 `ports`，即不暴露到宿主机**，只在 compose 内部网络可达
+
+换对外端口：`APP_PORT=9000 docker compose up -d`，或写进 `.env`。
+
+### 形态 B：单容器（轻量，适合只给一个端口的 PaaS）
+
+```bash
+docker build -t jobpilot .
+docker run -p 8001:8000 --env-file .env -v jobpilot_data:/app/data jobpilot
+# 打开 http://localhost:8001  —— 前端由 FastAPI 同源托管，不需要 nginx
+```
+
+> 宿主机端口刻意用 8001：容器内统一 8000（镜像可移植），宿主机端口让开本地开发用的
+> `uvicorn --reload`，避免抢端口。想用 8000 就把 `-p 8000:8000` 换回去，
+> 但记得先停掉本地 dev server。
+
+### 两种形态的差别
+
+| | 形态 A（nginx） | 形态 B（单容器） |
+|---|---|---|
+| 前端托管 | nginx 直出（gzip + 分层缓存） | FastAPI `StaticFiles` |
+| 后端暴露 | 不暴露，只能经 nginx | 与前端同一端口 |
+| 容器数量 | 2（nginx 常驻约 20 MB） | 1 |
+| 前端构建参数 | 默认 `/api`（由 nginx 反代） | 注入 `VITE_API_BASE=""`（同源根路径） |
+| 适用场景 | VPS / compose 环境 | 单端口 PaaS、本地快速验证 |
+
+两套共用同一份前端源码，差别只在**构建期注入的环境变量**：
+`frontend/src/api.ts` 里 `BASE = import.meta.env.VITE_API_BASE ?? '/api'`，
+走 `/api` 前缀还是走同源根路径，由构建参数决定，后端路由前缀始终不变。
+
+### 密钥与数据（两种形态一致）
+
+- **多阶段构建**：前端在 `node:22-slim` 阶段构建，运行镜像只带结果不带工具链。
+- **密钥不进镜像**：`.env` 被 `.dockerignore` 排除，只在运行时用 `--env-file` 注入。
+  镜像里也没有向量库和上传文件——`data/` 整个被排除，`data/uploads` 里是真实简历，
+  打进镜像等于把个人信息推到镜像仓库。
+- **持久化**：容器内 `data/` 是挂载点，用 volume 保留向量库。不挂的话每次重建容器都要重新入库。
+- **非 root 运行**：镜像内建 `appuser`（uid 10001）并 `chown` 数据目录。
+  注意 `chown` 必须在 `USER` 之前——命名卷首次创建时继承挂载点属主，顺序反了运行期写向量库会 PermissionError。
+- **健康检查**：后端 `HEALTHCHECK` 打 `/health`（返回 warmup 报告，能直接看出向量库起没起），
+  `start-period` 给到 40s（chroma 首次初始化 + embedding 预热）。compose 里 `web` 用
+  `depends_on: condition: service_healthy` 等它就绪，避免首屏吃 502。
+
+### nginx 配置里三个必须写对的点（`deploy/nginx.conf`）
+
+1. **`proxy_pass` 的尾斜杠不能省**：`proxy_pass http://api:8000/;` 结尾这个 `/` 会把 `/api/`
+   前缀替换成 `/`，于是 `/api/chat/stream` 到后端就是 `/chat/stream`；漏掉斜杠会原样透传前缀，
+   后端全部 404。语义与 `vite.config.ts` 里的 `rewrite: path.replace(/^\/api/, '')` 一致。
+2. **SSE 必须关 `proxy_buffering`**：默认开着的话流式回答会被 nginx 攒在缓冲区里，
+   前端表现为"卡住几秒然后整段弹出"，逐字效果全没了。后端已带 `X-Accel-Buffering: no`
+   响应头，nginx 侧再显式关一次做双保险；同时把 `proxy_read_timeout` 从默认 60s 放宽到 300s。
+3. **`client_max_body_size`**：默认只放 1m，上传简历 PDF 会在 nginx 入口直接 413，
+   请求根本到不了后端，很容易被误判成后端上传逻辑的 bug。
+
+另外 `index.html` 必须 `no-cache`（它记录着当前版本引用的 chunk 文件名，被缓存住就会拿着旧 html
+去请求已删除的旧 chunk → 白屏），而 `/assets/` 下的 hash 产物可以 `immutable` 长缓存。
+
+容器内也能跑自检脚本排障：
+
+```bash
+# 形态 A：在运行中的 api 容器里执行
+docker compose exec api python scripts/check_llm.py
+docker compose exec api python scripts/check_rag.py
+# 形态 B
+docker run --rm --env-file .env jobpilot python scripts/check_llm.py
+```
+
 ## 技术选型
 
 | 能力 | 选型 | 说明 |
@@ -90,6 +173,10 @@ npm run dev
 | `app/api/` | REST + SSE 流式接口；知识库管理接口（`category=简历素材` 自动走简历解析器） |
 | `app/warmup.py` | 启动预热：把重客户端初始化提前到单线程阶段，消除并发冷启动竞态 |
 | `frontend/` | Vue 3 对话界面：流式回答、markdown 渲染、引用来源可展开、知识库管理面板 |
+| `app/main.py` | FastAPI 入口 + 前端静态托管挂载（检测到 `frontend/dist` 自动生效，纯后端开发时静默跳过） |
+| `docker-compose.yml` + `deploy/nginx.conf` | nginx 形态编排：静态托管 + `/api` 反代（SSE 直通、上传体积、缓存分层） |
+| `Dockerfile.backend` / `frontend/Dockerfile` | nginx 形态的两个镜像：纯后端（无 node、无 dist）+ nginx 前端 |
+| `Dockerfile` / `.dockerignore` | 单容器形态多阶段构建；构建上下文排除 `.env`、`data/`（含真实简历）与本地调试脚本 |
 | `scripts/eval_retrieval.py` | 检索评测：recall@k / MRR + 逐条诊断 + 语料一致性自检 |
 | `scripts/eval_answer.py` | LLM-as-judge：忠实度 / 相关性打分 + 基线对比 |
 | `scripts/` | 入库 CLI（知识/简历）+ 各层自检脚本（LLM / RAG / SSE / Agent / 并发） |
@@ -175,6 +262,22 @@ python scripts/eval_retrieval.py --save _eval/new.json --baseline _eval/base.jso
 3. **增量入库与"修改"共用一套幂等逻辑**：`doc_id = sha1(source + text)`，重复入库天然跳过；改块的文本会得到新 id，所以"修改 = 删旧 + 按新内容入库"，同一套去重规则复用，不会产生重复块。
 4. **Windows 上传踩坑**：`shutil.move` 移动仍被打开的文件会报 `WinError 32`，改成直接 `write_bytes` 落盘 + 文件名取 `Path(filename).name` 防路径穿越。
 5. **块级标签失效**：入库时 `tags` 传的是"全文档板块并集"，导致简历每个块都带上了所有板块标签，"按板块过滤"形同虚设——检索诊断时发现（每个块的 tags 完全一样）。改为支持 `per_chunk_tags`，块只带自己所属板块；同时加了板块识别置信度告警（PDF 抽取把标题顺序打乱时，97% 正文会挤进单个板块，此时明确提示改用 md/docx）。
+6. **隐式依赖只在干净环境暴露**：镜像构建后容器启动即崩，报 `Form data requires "python-multipart"`。
+   它是 FastAPI 处理 `UploadFile` 的**运行时依赖**，代码里没人 `import multipart`，
+   本地恰好装着所以毫无症状——**"扫 import"的排查手段根本抓不到它**。
+   本地的依赖列表无法证明声明完整，只有干净环境装一次才能证伪；这正是容器化的价值。
+7. **部署期的前端同源问题**：前端接口基址写死 `'/api'`，那是 vite dev 代理引入的约定，
+   打包成静态文件后没有任何东西去接，接口全 404。改为构建期可注入
+   （`VITE_API_BASE=""` 走同源根路径），dev 链路与后端路由前缀都不用动。
+   注意必须用 `??` 而非 `||`——空字符串是合法取值，`||` 会把它吞掉导致注入静默失效。
+8. **反向代理接 SSE 的两个坑**：切到 nginx 形态后流式失效的风险点有两处——
+   一是 `proxy_buffering` 默认开启，会把 token 攒在缓冲区里（前端表现为"卡住几秒然后整段弹出"），
+   这里靠后端 `X-Accel-Buffering: no` 响应头 + nginx 侧 `proxy_buffering off` 双保险；
+   二是 `proxy_pass` 的尾斜杠语义（`http://api:8000/` 剥掉 `/api` 前缀 vs `http://api:8000` 原样透传），
+   写错就是全站 404，而且报错信息完全指不到原因。这类"配置项语义差异"只能靠实测验证。
+9. **静态资源缓存分层**：hash 产物（`/assets/`）可以 `immutable` 缓存 30 天，
+   但 `index.html` 必须 `no-cache`——它记录着当前版本引用的 chunk 文件名，
+   一旦被缓存住，用户会拿着旧 html 去请求已经删掉的旧 chunk，直接白屏。
 
 ## License
 

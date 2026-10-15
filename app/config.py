@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     recall_per_channel: int = 20
 
+    # 跨域白名单（逗号分隔）。开发时前端在 5173，需要显式放行；
+    # 生产单容器部署下前后端同源，浏览器根本不发跨域请求，这份配置用不到——
+    # 所以默认值只放开发地址，不再全开 "*"（全开等于让任意网站都能调你的接口）。
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     @field_validator("llm_enable_thinking", mode="before")
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
@@ -75,6 +80,11 @@ class Settings(BaseSettings):
     @property
     def uploads_path(self) -> Path:
         return BASE_DIR / self.uploads_dir
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """跨域白名单拆成列表；留空即为不放行任何跨域来源（同源部署场景）。"""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 @lru_cache

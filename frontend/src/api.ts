@@ -15,7 +15,11 @@ import type {
   UploadBatchResult,
 } from './types'
 
-const BASE = '/api'
+// 接口基址两个环境各一个值：
+// - 开发：'/api'，交给 vite.config.ts 的 proxy 转发到 127.0.0.1:8000；
+// - 生产（单容器）：'/'，前端由后端 StaticFiles 同源托管，不必再套反向代理。
+// 用 ?? 而不是 ||：空字符串是合法取值（同源根路径），|| 会把它误吞成 '/api'。
+const BASE: string = import.meta.env.VITE_API_BASE ?? '/api'
 
 // ---------- 聊天 ----------
 
