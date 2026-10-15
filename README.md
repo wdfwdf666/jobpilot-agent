@@ -4,34 +4,85 @@
 把 JD 丢进来，它会做 JD 深度分析 → 简历匹配与优化建议（带原文引用）→ 基于个人知识库的模拟面试。
 
 前端 Vue 3 + TypeScript，后端 FastAPI + SSE 真流式输出。
+JD 分析在图上挂了一层**人工审核**（LangGraph `interrupt`）——要求抽取错了可以当场改，改完重算匹配度。
 
 > 进度：**D1-11 已完成** —— 项目骨架 / 简历解析入库 / 检索与 LLM 打通 / 知识库可视化管理 /
 > JD 分析（结构化抽取 + 简历逐条匹配打分，带原文证据）/ 模拟面试（出题 → 批改 → 追问状态机）/
 > **混合检索（BM25 + 向量 + RRF）与评测体系**（检索 recall/MRR 对比 + LLM-as-judge 回答质量评分）。
 > **D12 已完成**：Docker 部署双形态 —— nginx 双容器（compose 编排 + 反向代理 + SSE 直通）
 > 与单容器（多阶段构建 + 健康检查 + 非 root 数据卷）。
-> 下一步 D13-14：demo 录屏；联网搜索（博查）已备好工具层，待接 Function Calling。
+> **D12 增补**（三个能力一起把 Agent 闭环补上）：
+> ① **Function Calling** —— 模型自主决定是否联网，工具循环 + 步数上限 + 失败降级（`app/tools/tool_loop.py`）；
+> ② **人机协同** —— SqliteSaver 检查点 + `interrupt` 人工审核 + `Command(resume=...)` 续跑；
+> ③ **结果有出口** —— 匹配度可视化面板（结构化产物直接渲染）与面试评分报告导出（回链知识库薄弱板块）。
+> 下一步 D13-14：demo 录屏。
 
 ## 架构
 
 ```
 Vue 3 + TS (Vite, :5173)
-        │  POST /chat/stream  (SSE: delta / status / artifacts)
+        │  POST /chat/stream        (SSE: delta / status / artifacts / interrupt / done)
+        │  POST /chat/resume        (SSE，带上人工审核决定续跑同一线程)
         ▼
 FastAPI (:8000)
         │
    LangGraph Supervisor  ── Planner 意图路由
-        ├── JD 分析师      （JD 拆解 → 硬性要求 / 加分项 / 关键词）
+        ├── JD 分析师      （JD 拆解 → 结构化抽取 + 逐条匹配打分）
+        │        └── JD 人工审核  ← interrupt：可确认 / 修正要求后重算
         ├── 简历顾问      （匹配度分析 + 改写建议，引用简历原文）
-        └── 面试官        （基于个人知识库出题 + 追问）
+        ├── 面试官        （基于个人知识库出题 + 追问 + 评分留档）
+        ├── 通用对话      （自由问答，按需自主调用联网搜索）
+        └── finalize      （统一把回复落进对话历史）
                     │
               RAG 检索层（Qwen text-embedding-v4 + ChromaDB，category 作用域过滤）
+                    │
+              工具层（web_search · 博查 BochaAI，Function Calling 按需触发）
+                    │
+              SqliteSaver 检查点（图状态 + 对话历史，按 thread_id 持久化）
 ```
+
+## 接口一览
+
+前端只跟一个同源基址打交道（dev 由 vite 代理 `/api` 到 8000，生产由 nginx 反代，路由前缀始终不变）。
+
+**对话 `/chat`**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/chat/stream` | SSE 主入口。事件类型：`status` / `delta` / `artifacts` / `interrupt` / `done` / `error` |
+| POST | `/chat/resume` | 带上人工审核决定续跑**同一 thread**（`Command(resume=...)`），帧格式与 `/stream` 共用一份实现 |
+| GET | `/chat/history/{session_id}` | 对话历史。直接读检查点的 `messages` 通道，不依赖进程内状态，所以重启后端也接得上 |
+| GET | `/chat/state/{session_id}` | 会话状态，含 `pending_interrupt`——刷新页面后据此把待审核卡片还原出来 |
+| POST | `/chat/interview/end/{session_id}` | 结束面试并**保留**逐题记录（报告是"结束之后"才导出的） |
+
+**面试报告 `/interview`**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/interview/report/{session_id}` | 聚合逐题记录成 Markdown，外加 `knowledge_gaps`（薄弱点 + 回链到的知识库文档） |
+| GET | `/interview/records/{session_id}` | 只取结构化逐题记录（题目 / 回答 / 得分 / 对错要点 / 追问） |
+
+**知识库 `/kb`**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/kb/documents` | 粘贴文本入库；`category=简历素材` 时自动走简历板块解析器 |
+| POST | `/kb/upload` · `/kb/upload-batch` | 单文件 / 批量上传（md / txt / pdf / docx / html），批量逐文件返回结果 |
+| POST | `/kb/search` | 检索测试，返回命中块与分数，用于调参时肉眼核对 |
+| GET | `/kb/stats` · `/kb/documents` · `/kb/chunks` | 库统计 / 文档列表（含块级标签）/ 块列表 |
+| PUT | `/kb/chunks/{chunk_id}` | 改块文本并**重新向量化**（删旧 + 按新内容入库，复用同一套幂等去重） |
+| DELETE | `/kb/documents` · `/kb/chunks/{chunk_id}` | 删文档 / 删块 |
+
+`GET /health` 返回 warmup 报告（向量库 / embedding / LLM / retriever 是否就绪 + 块数），Docker 的健康检查打的就是它。
 
 ## 项目亮点
 
 - **多 Agent 显式编排**：用 LangGraph `StateGraph` 而不是隐式 Agent 链 —— 状态可枚举、路径可回溯、节点可单测。
+- **人在环（human-in-the-loop）**：JD 分析后图会 `interrupt` 停住，把抽取出的硬性/加分要求交给用户确认；用户也可以改完再继续，此时匹配度按修正后的要求**重算**。恢复靠 `Command(resume=...)` 打同一 `thread_id`，所以刷新页面、重启进程都接得上（`SqliteSaver` 落盘）。SSE 协议上把中断翻译成一个 `interrupt` 事件且**不发 `done`**，前端据此渲染审核卡片。
+- **结构化产物直接可视化**：JD 匹配不走"让模型把分数写进 markdown"，而是结构化输出经 SSE `artifacts` 推到前端，渲染成匹配度面板（总分环形 + 逐条要求分数条 + 简历原文证据 + 补强建议），最弱的排最前面。
+- **结果有出口**：模拟面试逐题留档，结束后聚合成一份 Markdown 评分报告（总分 / 逐题表 / 逐题明细），并对每个薄弱点回链到知识库——给出可检索关键词与该板块里已有的相关材料，前端 chip 一点就直接跳过去搜。
 - **可追溯的回答**：所有基于知识库的结论都带原文片段与来源文件，通过 SSE `artifacts` 事件推到前端渲染，不是"黑盒胡说"。
+- **LLM 自主调用工具**：联网搜索以 Function Calling 形式提供，由模型自己判断该不该搜——问"某公司做什么"它会搜，问"RAG 和微调的区别"它不搜。工具循环留在节点内部而不摊进图（图仍是一进一出），用步数上限防死循环，工具报错则把错误原文回喂让模型降级作答。
 - **简历按板块解析入库**：简历不是普通文档。解析器识别（基本信息/教育/技能/工作/项目/荣誉/自我评价）分段，并给每段打板块标签，检索时按类别缩小范围，精度显著优于整篇滑窗切分。
 - **知识库可运营**：粘贴入库 / 文件上传 / 检索测试 / 文档管理（查看块、改文本重新向量化、删块、删文档），不是只能进不能出的 demo。
 - **真流式**：LangGraph `get_stream_writer()` 自定义流 → SSE 增量推送 token（不是打完后一次性吐出来）。
@@ -169,30 +220,39 @@ docker run --rm --env-file .env jobpilot python scripts/check_llm.py
 |------|------|
 | `app/config.py` | 全局配置（pydantic-settings，读 .env） |
 | `app/rag/` | 文档解析（pdf/docx/html）→ 简历板块解析 → 分块 → 向量化 → 检索 |
-| `app/agents/` | Planner + 三个子 Agent + LangGraph 编排（真流式，检索按类别注入上下文） |
-| `app/api/` | REST + SSE 流式接口；知识库管理接口（`category=简历素材` 自动走简历解析器） |
+| `app/agents/` | Planner + 四个子 Agent + LangGraph 编排（真流式，检索按类别注入上下文，JD 分析后挂人工审核中断） |
+| `app/agents/checkpoint.py` | SqliteSaver 进程级单例：图状态与对话历史落盘，`interrupt` / `resume` 的前提 |
+| `app/tools/` | 联网搜索（博查 BochaAI）+ Function Calling 工具循环：模型自主决定是否联网，带步数上限与失败降级 |
+| `app/api/` | REST + SSE 流式接口（含中断恢复 `/chat/resume`）；知识库管理接口（`category=简历素材` 自动走简历解析器） |
+| `app/api/routes_interview.py` | 面试评分报告接口：聚合逐题记录成 Markdown + 知识库回链 |
 | `app/warmup.py` | 启动预热：把重客户端初始化提前到单线程阶段，消除并发冷启动竞态 |
-| `frontend/` | Vue 3 对话界面：流式回答、markdown 渲染、引用来源可展开、知识库管理面板 |
+| `frontend/` | Vue 3 对话界面：流式回答、markdown 渲染、引用来源可展开、**匹配度面板**、**人工审核卡片**、面试报告导出、知识库管理面板 |
 | `app/main.py` | FastAPI 入口 + 前端静态托管挂载（检测到 `frontend/dist` 自动生效，纯后端开发时静默跳过） |
 | `docker-compose.yml` + `deploy/nginx.conf` | nginx 形态编排：静态托管 + `/api` 反代（SSE 直通、上传体积、缓存分层） |
 | `Dockerfile.backend` / `frontend/Dockerfile` | nginx 形态的两个镜像：纯后端（无 node、无 dist）+ nginx 前端 |
 | `Dockerfile` / `.dockerignore` | 单容器形态多阶段构建；构建上下文排除 `.env`、`data/`（含真实简历）与本地调试脚本 |
 | `scripts/eval_retrieval.py` | 检索评测：recall@k / MRR + 逐条诊断 + 语料一致性自检 |
 | `scripts/eval_answer.py` | LLM-as-judge：忠实度 / 相关性打分 + 基线对比 |
-| `scripts/` | 入库 CLI（知识/简历）+ 各层自检脚本（LLM / RAG / SSE / Agent / 并发） |
+| `scripts/` | 入库 CLI（知识/简历）+ 各层自检脚本（LLM / RAG / SSE / Agent / 并发 / 工具调用） |
 
 ## 测试与自检
 
 ```bash
-pytest -q                      # 单元测试（解析器 / 配置 / 单例 / 混合检索 / Prompt 回归）
+pytest -q                      # 单元测试（解析器 / 配置 / 单例 / 混合检索 / Prompt 回归 / 工具循环 / 人审中断 / 面试报告）
 python scripts/check_rag.py        # RAG 链路：入库 -> 检索
 python scripts/check_stream.py     # SSE 真流式 + 引用来源（走 HTTP）
-python scripts/check_agent.py      # Agent 端到端：意图路由 + 检索注入 + 流式 + 来源
+python scripts/check_agent.py      # Agent 端到端：路由 + 检索注入 + 流式 + 来源 + 人审中断与自动 resume
+python scripts/check_agent.py "分析这个 JD：…" --hold   # 停在人工审核处，只打印中断载荷
+python scripts/check_tools.py      # Function Calling：模型是否自主调用、该不用时是否克制
 python scripts/check_concurrent.py --mix   # 并发安全：混合端点压测
 python scripts/eval_retrieval.py --check-corpus   # 【改库后先跑】用例是否已过期
 python scripts/eval_retrieval.py -v               # 检索评测 + 逐条诊断
 python scripts/eval_answer.py -v                  # LLM-as-judge + 依据/回答明细
 ```
+
+人机协同相关的一次性验证（`tests/test_graph_review.py`，用内存检查点 + 假 LLM，不烧额度）覆盖：
+中断发生在出正文之前、`approve` 续跑并落历史、`edit` 按修正要求重算、thread 之间历史隔离、
+以及关掉 `HUMAN_REVIEW_JD` 后退化为全自动。
 
 ## 评测：指标怎么看、怎么改
 
@@ -278,6 +338,25 @@ python scripts/eval_retrieval.py --save _eval/new.json --baseline _eval/base.jso
 9. **静态资源缓存分层**：hash 产物（`/assets/`）可以 `immutable` 缓存 30 天，
    但 `index.html` 必须 `no-cache`——它记录着当前版本引用的 chunk 文件名，
    一旦被缓存住，用户会拿着旧 html 去请求已经删掉的旧 chunk，直接白屏。
+10. **interrupt 不是异常，是"存下状态再抛"**：第一次接人机协同时很容易以为
+    "加个 `interrupt()` 就完事"，实际是三件套：图必须带 checkpointer 编译、
+   调用必须传 `thread_id`、恢复必须用 `Command(resume=...)`。少任何一件，
+   中断都无处可存或无处可续。另外 SSE 侧要显式区分中断与正常结束——
+   中断时**不能发 `done`**，否则前端以为这一轮跑完了，审核卡片永远不出现。
+11. **节点内 `interrupt()` 之后的代码才是"只执行一次"的**：恢复时整个节点函数会从头再执行，
+   这次 `interrupt()` 直接返回人工输入。所以 LLM 调用、流式输出这类重活必须放在
+   `interrupt()` **之后**，否则每次恢复都会把前面的活再干一遍（重复计费 + 重复副作用）。
+   与本项目相关的推论：JD 分析被拆成 `jd_analyst`（结构化抽取，不出文案）与
+   `jd_review`（审核 + 出文案）两个节点，既避免恢复时重跑抽取，也保证人工修正后
+   "结论只出一版"。
+12. **持久化图状态会让"上一轮的回复"残留**：带 checkpointer 后 `state["reply"]`
+   跨轮存在，若直接用 `final_state["reply"]` 兜底，中断那一轮会把上一轮的回复当成本轮结果。
+   解法是优先用本轮实际流出的 delta 拼接，并且在中断时直接返回、不落到兜底分支。
+13. **检查点里存 dict 比存 pydantic 模型稳**：`messages` 用 `list[dict]` 而不是
+   `ChatMessage` 模型，序列化器对 dict / 原生类型最稳，跨版本升级也不容易踩类型坑。
+14. **并行编辑同一文件会互相覆盖**：本轮实现中我两次并行对同一文件发起编辑，
+   后写的那次把先写的冲掉了（`config.py` 的字段定义、`main.py` 的 import 各丢一次），
+   靠事后 grep 复查才发现。**改完必须回读文件确认内容**，不能只看工具返回的 success。
 
 ## License
 
