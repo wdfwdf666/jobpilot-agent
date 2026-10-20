@@ -14,6 +14,7 @@ import type {
   KbDocument,
   KbHit,
   ReviewDecision,
+  SessionItem,
   StreamHandlers,
   UploadBatchResult,
 } from './types'
@@ -162,6 +163,23 @@ export async function fetchChatState(sessionId: string): Promise<ChatState> {
 
 export async function endInterview(sessionId: string): Promise<void> {
   await fetch(`${BASE}/chat/interview/end/${encodeURIComponent(sessionId)}`, { method: 'POST' })
+}
+
+// ---------- 会话列表 ----------
+
+export async function fetchSessions(): Promise<SessionItem[]> {
+  const resp = await fetch(`${BASE}/chat/sessions`)
+  if (!resp.ok) throw new Error(`获取会话列表失败：HTTP ${resp.status}`)
+  const data = (await resp.json()) as { sessions: SessionItem[] }
+  return data.sessions
+}
+
+/** 删除会话：索引 + 面试记录 + 检查点线程，后端三处一起清 */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const resp = await fetch(`${BASE}/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  })
+  if (!resp.ok) throw new Error(`删除会话失败：HTTP ${resp.status}`)
 }
 
 // ---------- 知识库 ----------

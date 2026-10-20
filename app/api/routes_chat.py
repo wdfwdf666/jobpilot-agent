@@ -23,9 +23,19 @@ from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from app.agents.graph import app_graph, get_interviewer
+from app.agents.graph import app_graph, drop_interviewer, get_interviewer
+from app.storage import (
+    delete_chat_session,
+    known_thread_ids,
+    list_chat_sessions,
+    touch_chat_session,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# 会话列表里 kind 字段的取值：给左栏做徽标（面试 / 对话）
+KIND_INTERVIEW = "面试"
+KIND_CHAT = "对话"
 
 Mode = Literal["auto", "jd_analysis", "resume_advice", "mock_interview", "general_chat"]
 
@@ -96,7 +106,18 @@ def _run_stream(payload: Any, session_id: str) -> Iterator[str]:
     reply = "".join(reply_parts) or final_state.get("reply", "") or "（空回复）"
     if final_state.get("artifacts"):
         yield _sse("artifacts", final_state["artifacts"])
-    yield _sse("done", {"intent": final_state.get("intent", ""), "reply_chars": len(reply)})
+    # 会话索引收口：done 时才写 kind/turns——中断的轮次不算完整一轮，
+    # 轮数按"用户消息条数"算，比数 assistant 气泡稳定（气泡可能被打断）。
+    turns = sum(
+        1 for m in (final_state.get("messages") or []) if isinstance(m, dict) and m.get("role") == "user"
+    )
+    intent = final_state.get("intent", "")
+    touch_chat_session(
+        session_id,
+        kind=KIND_INTERVIEW if intent == "mock_interview" else KIND_CHAT,
+        turns=turns,
+    )
+    yield _sse("done", {"intent": intent, "reply_chars": len(reply)})
 
 
 def _streaming_response(gen: Iterator[str]) -> StreamingResponse:
@@ -117,6 +138,9 @@ def _streaming_response(gen: Iterator[str]) -> StreamingResponse:
 
 @router.post("/stream")
 def chat_stream(req: ChatRequest) -> StreamingResponse:
+    # 会话索引：首条消息即建行并定标题（确定性、零成本，不为此多调一次 LLM）。
+    # 已有会话只更新活跃时间，标题保持首条消息不被后来的话改写。
+    touch_chat_session(req.session_id, title=req.message.strip()[:40] or None)
     graph_input = {
         # 只传增量：messages 用 operator.add 累加，由 checkpointer 保存，
         # 不能把整段历史再传一遍（会平方级重复累积）。
@@ -187,4 +211,41 @@ def get_state(session_id: str):
 def end_interview(session_id: str):
     """结束面试：清挂起题目并留存本次评分记录（供导出报告）。"""
     get_interviewer(session_id).end_interview()
+    return {"ok": True}
+
+
+# --- 会话列表（左侧栏）-------------------------------------------------------
+
+def _merged_sessions(limit: int = 50) -> list[dict]:
+    """chat_sessions 索引 ∪ 检查点里出现过的 thread_id。
+
+    只查索引会出现"列表莫名少几条"：检查点里有历史的线程（老会话、probe 线程）
+    可能没有索引行。兜底把它们拼进列表尾部（标题「未命名会话」），宁可多显示
+    一条，也不让用户以为对话丢了。
+    """
+    indexed = list_chat_sessions(limit=limit)
+    seen = {s["session_id"] for s in indexed}
+    for tid in sorted(known_thread_ids() - seen):
+        indexed.append({
+            "session_id": tid, "title": "未命名会话", "kind": KIND_CHAT,
+            "turns": 0, "created_at": "", "updated_at": "",
+        })
+    return indexed[:limit]
+
+
+@router.get("/sessions")
+def get_sessions():
+    """左侧会话列表：最近 50 个，按最近活跃倒序。"""
+    return {"sessions": _merged_sessions()}
+
+
+@router.delete("/sessions/{session_id}")
+def remove_session(session_id: str):
+    """删除会话：索引行 + 面试记录 + 检查点线程一起删（三处都要清，缺一处就"复活"）。"""
+    delete_chat_session(session_id)
+    drop_interviewer(session_id)
+    try:
+        app_graph.checkpointer.delete_thread(session_id)
+    except Exception as exc:  # noqa: BLE001 索引已删，线程清理失败不阻塞响应
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
     return {"ok": True}

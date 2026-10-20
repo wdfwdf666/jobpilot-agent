@@ -18,6 +18,12 @@ from datetime import datetime
 from app.agents import llm
 from app.rag.retriever import get_retriever
 from app.schemas import RetrievedChunk, parse_json_output
+from app.storage import (
+    clear_interview,
+    load_interview_state,
+    save_interview_record,
+    save_interview_state,
+)
 
 SYSTEM_PROMPT = """你是严格但友善的技术面试官。根据目标岗位和候选人简历提问。
 规则：
@@ -37,14 +43,27 @@ DEFAULT_REFERENCE_CATEGORY = "八股文"
 
 
 class InterviewerAgent:
-    def __init__(self) -> None:
+    def __init__(self, session_id: str = "default") -> None:
         # 必须走进程级单例：并发请求线程里直接构造 Retriever 会重演 chroma 冷启动竞态
         self._retriever = get_retriever()
-        self._history: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        self._pending_question: str | None = None
-        # 逐题评分留档：只在本场面试内累积，结束后仍保留，直到开新一场
-        self._records: list[dict] = []
-        self._ended = False
+        self._session_id = session_id
+        # 落盘恢复（模拟重启）：评分记录与面试官上下文在库里就绪时直接接上，
+        # 而不是从零开始——否则后端一重启，"导出面试报告"就变成空报告。
+        state = load_interview_state(session_id)
+        if state and state["history"]:
+            self._history = state["history"]
+            self._pending_question = state["pending_question"]
+            self._records = state["records"]
+            self._ended = state["ended"]
+        else:
+            self._history: list[dict[str, str]] = [
+                {"role": "system", "content": SYSTEM_PROMPT}
+            ]
+            self._pending_question: str | None = None
+            # 逐题评分留档：只在本场面试内累积，结束后仍保留，直到开新一场。
+            # 历史行缺失但评分记录已落库的中间态也要接住（两类行独立写入）。
+            self._records: list[dict] = state["records"] if state else []
+            self._ended = False
 
     # --- 状态机入口 -------------------------------------------------------------
 
@@ -59,14 +78,30 @@ class InterviewerAgent:
             return self._ask(user_message, emit, references), {}
         return self._grade_and_followup(user_message, emit, references)
 
+    # --- 落盘 -------------------------------------------------------------------
+
+    def _persist_record(self, record: dict) -> None:
+        """评分记录同步落库。_session_id 为空 = 测试旁路构造（不绑会话，不写库）。"""
+        sid = getattr(self, "_session_id", "")
+        if sid:
+            save_interview_record(sid, len(self._records), record)
+
+    def _persist_state(self) -> None:
+        """面试官上下文（历史/挂起题目/是否结束）落库，重启后可接着面。"""
+        sid = getattr(self, "_session_id", "")
+        if sid:
+            save_interview_state(sid, self._history, self._pending_question, self._ended)
+
     # --- 出题轮 -----------------------------------------------------------------
 
     def _ask(self, user_message: str, emit, references: list[RetrievedChunk]) -> str:
         # 上一场已结束、现在又出题 = 开了新的一场：清掉旧记录，
-        # 否则新面试的报告里会混进上一场的分数。
+        # 否则新面试的报告里会混进上一场的分数。内存与库一起清。
         if self._ended:
             self._records = []
             self._ended = False
+            if getattr(self, "_session_id", ""):
+                clear_interview(self._session_id)
         emit({"status": "正在从知识库选题…"})
         # 主题直接取用户原话（"考我 RAG"->RAG），比从检索片段截取前缀稳定得多
         topic = user_message.strip()[:60] or "Python 后端开发"
@@ -80,6 +115,7 @@ class InterviewerAgent:
         }])
         self._history.append({"role": "assistant", "content": question})
         self._pending_question = question
+        self._persist_state()
         # 出题是短文本，分块推送保持与其它 Agent 一致的渐进渲染
         for i in range(0, len(question), 32):
             emit({"delta": question[i:i + 32]})
@@ -143,6 +179,7 @@ class InterviewerAgent:
             "followup": str(grade.get("followup") or ""),
             "reference_sources": sorted({c.source for c in references if c.source}),
         })
+        self._persist_record(self._records[-1])
 
     # --- 基础能力 ---------------------------------------------------------------
 
@@ -202,6 +239,7 @@ class InterviewerAgent:
             emit({"delta": delta})
         reply = "".join(parts)
         self._history.append({"role": "assistant", "content": reply})
+        self._persist_state()  # 每轮对话历史变化即落库（批改轮的最后一步也在这里收口）
         return reply
 
     # --- 评分报告 ---------------------------------------------------------------
@@ -330,6 +368,7 @@ class InterviewerAgent:
         self._pending_question = None
         self._history = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._ended = True
+        self._persist_state()
 
 
 def _shorten(text: str, limit: int) -> str:

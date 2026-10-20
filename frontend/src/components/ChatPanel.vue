@@ -17,6 +17,7 @@ import type {
   SseArtifacts,
   StreamHandlers,
 } from '../types'
+import { useSessions } from '../useSessions'
 import MatchPanel from './MatchPanel.vue'
 import ReviewCard from './ReviewCard.vue'
 
@@ -43,14 +44,15 @@ const MODES = [
 ] as const
 const mode = ref<string>('auto')
 
-// 会话 id 落 localStorage：图状态与对话历史都在后端的检查点里按 thread_id 存着，
-// 只要 id 不变，刷新页面甚至重启后端都能接着聊（此前是内存 dict，刷新即丢）。
-const SESSION_KEY = 'jobpilot.session_id'
-const sessionId = ref(localStorage.getItem(SESSION_KEY) || newSessionId())
-watch(sessionId, (v) => localStorage.setItem(SESSION_KEY, v))
-function newSessionId(): string {
-  return `web-${Math.random().toString(36).slice(2, 8)}`
-}
+// 会话 id 是应用级状态（useSessions 模块级单例）：左侧列表与聊天面板共享同一个
+// id，切换/新建由列表驱动，本组件只 watch 它来清场并从检查点恢复历史。
+// 图状态与对话历史都在后端检查点里按 thread_id 存着，只要 id 不变，
+// 刷新页面甚至重启后端都能接着聊（此前是内存 dict，刷新即丢）。
+const { sessionId, load: loadSessions, create: createSession } = useSessions()
+
+// 在途请求的中止句柄：切会话时先 abort 再恢复，否则正在流的那场
+// 会把后续 token 灌进新会话的气泡里（串流是切会话最典型的竞态）。
+let abort: AbortController | null = null
 
 const hadInterview = ref(false)
 const report = ref<InterviewReport | null>(null)
@@ -69,14 +71,32 @@ const SUGGESTIONS = [
   '我想模拟一场 Python 后端的技术面试',
 ]
 
-onMounted(restore)
+onMounted(() => {
+  loadSessions() // 列表数据由 SessionList 拉取，这里只是兜底早一步触发
+  restore()
+})
+
+// 会话切换（列表点选 / 新建 / 当前会话被删）：中止在途流 -> 清场 -> 恢复
+watch(sessionId, () => {
+  abort?.abort()
+  abort = null
+  messages.value = []
+  intent.value = ''
+  error.value = ''
+  report.value = null
+  reportOpen.value = false
+  hadInterview.value = false
+  restore()
+})
 
 /** 刷新后从检查点恢复：历史消息 + 上次的结构化产物 + 待人工确认的卡片。 */
 async function restore() {
-  const sid = sessionId.value
+  const sid = sessionId.value // 恢复期间可能又被切走：以快照为准，写前校验
   messages.value = (await fetchHistory(sid)) as ChatMessage[]
+  if (sessionId.value !== sid) return // 已切走：丢弃本次恢复结果
   try {
     const state = await fetchChatState(sid)
+    if (sessionId.value !== sid) return
     const last = messages.value[messages.value.length - 1]
     if (state.artifacts && Object.keys(state.artifacts).length) {
       if (last && last.role === 'assistant') {
@@ -143,6 +163,8 @@ async function pump(
       assistant.content = '（空回复，请检查后端日志）'
     }
   } catch (e) {
+    // 切会话触发的 abort 是正常路径：不计为错误，也不往已清空的列表里写东西
+    if (e instanceof DOMException && e.name === 'AbortError') return
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     streaming.value = false
@@ -163,8 +185,9 @@ async function send(text?: string) {
   messages.value.push(assistant)
   scrollToBottom()
 
+  abort = new AbortController()
   await pump(
-    (h) => streamChat(sessionId.value, content, h, undefined, mode.value),
+    (h) => streamChat(sessionId.value, content, h, abort!.signal, mode.value),
     assistant,
   )
 }
@@ -173,18 +196,14 @@ async function send(text?: string) {
 async function submitReview(assistant: ChatMessage, decision: ReviewDecision) {
   if (streaming.value) return
   assistant.reviewDecision = decision
-  await pump((h) => resumeChat(sessionId.value, decision, h), assistant)
+  abort = new AbortController()
+  await pump((h) => resumeChat(sessionId.value, decision, h, abort!.signal), assistant)
 }
 
 async function switchSession() {
+  // 新建会话：清场交给 watch(sessionId)（id 变化必触发，包括列表驱动的切换）
   if (streaming.value) return
-  sessionId.value = newSessionId()
-  messages.value = []
-  intent.value = ''
-  error.value = ''
-  report.value = null
-  reportOpen.value = false
-  hadInterview.value = false
+  createSession()
 }
 
 async function openReport() {

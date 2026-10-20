@@ -29,6 +29,7 @@ Function Calling 的接入范围（面试考点）：
 interrupt() 这次直接返回人工输入。所以 LLM 调用与流式输出必须放在 interrupt() 之后，
 否则每次恢复都会把前面的重活再跑一遍（重复计费、重复副作用）。
 """
+import logging
 import operator
 import threading
 from typing import Annotated, Any, TypedDict
@@ -49,6 +50,8 @@ from app.schemas import JDAnalysis, RetrievedChunk
 from app.tools.tool_loop import GENERAL_SYSTEM, run_with_tools
 from app.tools.web_search import search_available
 
+logger = logging.getLogger(__name__)
+
 
 class AgentState(TypedDict):
     # 对话历史：由 checkpointer 持久化，用 operator.add 累加（跨请求累积成完整会话）。
@@ -62,12 +65,14 @@ class AgentState(TypedDict):
     artifacts: dict  # 结构化中间产物：jd_analysis / match_result / sources / grade ...
 
 
-# 懒加载单例：面试官持有对话历史与挂起题目，必须按会话隔离——
+# 懒加载缓存：面试官持有对话历史与挂起题目，必须按会话隔离——
 # 全局共享单例会把上个会话的挂起题目泄漏到下个会话（真实踩坑：
 # 新会话说"分析这个 JD"却被旧题目的批改流程接管）。
+# 注意这只是**缓存**：评分记录与面试官上下文已落库（app/storage.py），
+# 被淘汰的会话下次访问会从库里重新 load，淘汰不再等于丢数据。
 _INTERVIEWERS: dict[str, InterviewerAgent] = {}
 _INTERVIEWERS_LOCK = threading.Lock()
-_MAX_INTERVIEW_SESSIONS = 50  # 简单防膨胀：超过就淘汰最早创建的会话
+_MAX_INTERVIEW_SESSIONS = 50  # 缓存容量上限（防内存膨胀），不是数据保留上限
 
 
 def get_interviewer(session_id: str = "default") -> InterviewerAgent:
@@ -75,9 +80,16 @@ def get_interviewer(session_id: str = "default") -> InterviewerAgent:
         agent = _INTERVIEWERS.get(session_id)
         if agent is None:
             if len(_INTERVIEWERS) >= _MAX_INTERVIEW_SESSIONS:
-                _INTERVIEWERS.pop(next(iter(_INTERVIEWERS)))
-            agent = _INTERVIEWERS[session_id] = InterviewerAgent()
+                evicted, _ = _INTERVIEWERS.popitem(last=False)
+                logger.warning("面试官缓存淘汰 session=%s（数据已在库中，可重新加载）", evicted)
+            agent = _INTERVIEWERS[session_id] = InterviewerAgent(session_id=session_id)
         return agent
+
+
+def drop_interviewer(session_id: str) -> None:
+    """删除会话时同步清掉内存缓存（库里的记录由 storage 层负责删）。"""
+    with _INTERVIEWERS_LOCK:
+        _INTERVIEWERS.pop(session_id, None)
 
 
 def _emit(writer: Any, event: dict) -> None:

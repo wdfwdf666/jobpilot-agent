@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import ChatPanel from './components/ChatPanel.vue'
 import KBPanel from './components/KBPanel.vue'
+import SessionList from './components/SessionList.vue'
 
 const kbRefreshKey = ref(0)
 function onKbChanged() {
@@ -23,7 +24,14 @@ function onKbSearch(query: string) {
       <div class="meta">Vue 3 + FastAPI · SSE 流式 · LangGraph 人审</div>
     </header>
     <main class="content">
-      <KBPanel ref="kbPanel" :refresh-key="kbRefreshKey" @changed="onKbChanged" />
+      <!-- 左列上下两块：会话列表固定高度（内部滚动）+ 知识库占剩余。
+           会话放上面：切换恢复是高频操作，知识库管理是低频操作。 -->
+      <aside class="left">
+        <SessionList />
+        <div class="kb-rest">
+          <KBPanel ref="kbPanel" :refresh-key="kbRefreshKey" @changed="onKbChanged" />
+        </div>
+      </aside>
       <ChatPanel @kb-changed="onKbChanged" @kb-search="onKbSearch" />
     </main>
   </div>
@@ -64,6 +72,23 @@ function onKbSearch(query: string) {
   grid-template-columns: 380px 1fr;
   gap: 16px;
   padding: 16px 24px;
+  min-height: 0;
+}
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+/* 知识库占满剩余高度：KBPanel 自身是可滚动的 .kb.card，给它一个确定的高度边界 */
+.kb-rest {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.kb-rest > :deep(.kb) {
+  flex: 1;
   min-height: 0;
 }
 @media (max-width: 900px) {

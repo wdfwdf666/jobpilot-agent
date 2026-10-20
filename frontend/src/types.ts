@@ -141,6 +141,17 @@ export interface InterviewReport {
   knowledge_gaps: KnowledgeGap[]
 }
 
+/** 左侧会话列表的一行（GET /chat/sessions） */
+export interface SessionItem {
+  session_id: string
+  title: string
+  /** 面试 | 对话（后端按 done 时的 intent 标） */
+  kind: string
+  turns: number
+  created_at: string
+  updated_at: string
+}
+
 /** SSE 事件负载 */
 export interface SseDelta {
   text: string
