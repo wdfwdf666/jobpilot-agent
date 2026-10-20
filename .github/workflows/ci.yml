@@ -16,9 +16,9 @@ jobs:
     name: backend (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           # 不用 3.13：chromadb 依赖 onnxruntime，3.12 的 manylinux wheel 覆盖最稳，
           # 免得 CI 卡在"没有预编译包、现场编译 C++"上（这不是本项目要测的东西）。
@@ -43,11 +43,11 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 

@@ -262,6 +262,16 @@ python scripts/eval_answer.py -v                  # LLM-as-judge + 依据/回答
 中断发生在出正文之前、`approve` 续跑并落历史、`edit` 按修正要求重算、thread 之间历史隔离、
 以及关掉 `HUMAN_REVIEW_JD` 后退化为全自动。
 
+**CI**（`.github/workflows/ci.yml`）：push 到 `main` 或开 PR 时并行跑两个 job —— 后端 `pytest`、
+前端 `vue-tsc + vite build`，不需要任何密钥（测试本身是 hermetic 的）。
+它抓的第一件事就很典型：11 条用例只在"本地有 `.env`"时通过，干净环境里直接抛
+`Embedding 无可用 API Key`——根因是 `InterviewerAgent` 构造时 eager 建 Retriever，
+现在改成首次检索才构造。想本地复现 CI 条件，一行就够：
+
+```bash
+LLM_API_KEY= EMBED_API_KEY= pytest -q     # 模拟没有 .env 的干净机器
+```
+
 ## 评测：指标怎么看、怎么改
 
 ### 两个脚本分别量什么
