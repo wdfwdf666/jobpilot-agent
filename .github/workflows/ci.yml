@@ -1,0 +1,61 @@
+name: CI
+
+# 只在主干与 PR 上跑：每条分支都跑会白烧额度，而 PR 覆盖了"合并前拦一道"的需求。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 连续 push 时取消上一次未完成的运行：等的是最新代码的结果，不是排在前面的旧结果。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 不用 3.13：chromadb 依赖 onnxruntime，3.12 的 manylinux wheel 覆盖最稳，
+          # 免得 CI 卡在"没有预编译包、现场编译 C++"上（这不是本项目要测的东西）。
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # 装的是 editable 包而不是手写依赖列表：依赖清单只有 pyproject 一份，
+      # 两边各写一份迟早漂移（漏掉 python-multipart 那种事就是这么发生的）。
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # 不注入任何密钥：测试里的 LLM 用例没有 key 时自行 skip，
+      # httpx 全部被 monkeypatch 替身，所以这一步是确定性的、可复现的。
+      - name: Test
+        run: pytest -q
+
+  frontend:
+    name: frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # npm ci 而非 npm install：按 lock 精确安装，lock 与 package.json 不一致时直接失败，
+      # 这正是我们想被拦下来的情况。
+      - name: Install
+        run: npm ci
+
+      # build 脚本本身是 `vue-tsc --noEmit && vite build`，类型检查与打包一步到位。
+      - name: Build
+        run: npm run build

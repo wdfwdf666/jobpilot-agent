@@ -1,5 +1,7 @@
 # JobPilot · 智能求职助手 Agent
 
+[![CI](https://github.com/wdfwdf666/jobpilot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wdfwdf666/jobpilot-agent/actions/workflows/ci.yml)
+
 基于 **LangGraph 多 Agent 编排 + RAG + Function Calling** 的求职助手：
 把 JD 丢进来，它会做 JD 深度分析 → 简历匹配与优化建议（带原文引用）→ 基于个人知识库的模拟面试。
 
@@ -14,7 +16,8 @@ JD 分析在图上挂了一层**人工审核**（LangGraph `interrupt`）——�
 > **D12 增补**（三个能力一起把 Agent 闭环补上）：
 > ① **Function Calling** —— 模型自主决定是否联网，工具循环 + 步数上限 + 失败降级（`app/tools/tool_loop.py`）；
 > ② **人机协同** —— SqliteSaver 检查点 + `interrupt` 人工审核 + `Command(resume=...)` 续跑；
-> ③ **结果有出口** —— 匹配度可视化面板（结构化产物直接渲染）与面试评分报告导出（回链知识库薄弱板块）。
+> ③ **结果有出口** —— 匹配度可视化面板（结构化产物直接渲染）与面试评分报告导出（回链知识库薄弱板块）；
+> ④ **会话可回到过去** —— 面试评分与会话索引落盘（与检查点同库同连接），左侧会话列表支持切换恢复与删除。
 > 下一步 D13-14：demo 录屏。
 
 ## 架构
