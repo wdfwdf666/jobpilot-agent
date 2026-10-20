@@ -16,7 +16,7 @@ import json
 from datetime import datetime
 
 from app.agents import llm
-from app.rag.retriever import get_retriever
+from app.rag.retriever import Retriever, get_retriever
 from app.schemas import RetrievedChunk, parse_json_output
 from app.storage import (
     clear_interview,
@@ -44,8 +44,12 @@ DEFAULT_REFERENCE_CATEGORY = "八股文"
 
 class InterviewerAgent:
     def __init__(self, session_id: str = "default") -> None:
-        # 必须走进程级单例：并发请求线程里直接构造 Retriever 会重演 chroma 冷启动竞态
-        self._retriever = get_retriever()
+        # Retriever **延迟**到第一次真正检索时才构造。
+        # 构造函数一旦 eager 建 Retriever，就等于要求"构造面试官必须有 Embedding Key"——
+        # 而路由、会话列表、报告聚合这些路径只读状态，根本不检索。CI 在干净环境里
+        # 把这点暴露得很清楚：只测路由的 10 条用例因为拿不到 Key 直接抛 RuntimeError。
+        # 延迟不影响单例语义：get_retriever() 本身仍是进程级单例（并发冷启动竞态那套逻辑不变）。
+        self._retriever_cache: Retriever | None = None
         self._session_id = session_id
         # 落盘恢复（模拟重启）：评分记录与面试官上下文在库里就绪时直接接上，
         # 而不是从零开始——否则后端一重启，"导出面试报告"就变成空报告。
@@ -64,6 +68,18 @@ class InterviewerAgent:
             # 历史行缺失但评分记录已落库的中间态也要接住（两类行独立写入）。
             self._records: list[dict] = state["records"] if state else []
             self._ended = False
+
+    @property
+    def _retriever(self) -> Retriever:
+        """第一次用到才构造；之后复用同一实例（get_retriever 内部仍是进程级单例）。"""
+        if self._retriever_cache is None:
+            self._retriever_cache = get_retriever()
+        return self._retriever_cache
+
+    @_retriever.setter
+    def _retriever(self, value: Retriever) -> None:
+        """保留"直接塞一个假 Retriever"的注入方式（报告/批改类单测靠它绕开向量库）。"""
+        self._retriever_cache = value
 
     # --- 状态机入口 -------------------------------------------------------------
 
